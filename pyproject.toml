@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "Pillow>=10",
+    "pyarrow>=18,<25",
     "pydantic>=2.8,<3",
     "PyYAML>=6",
+    "transformers>=4.57,<5",
     "torch>=2.5,<3",
 ]
 

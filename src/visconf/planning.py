@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
-import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypeVar
 
 from visconf.config import (
-    FrozenModel,
     LoadedExperimentGroup,
     ResolvedRunConfig,
     sha256_json,
+)
+from visconf.storage.manifest import (
+    ExperimentManifest,
+    RunManifest,
+    RunManifestEntry,
+    atomic_write_json,
+    build_run_manifest,
+    read_manifest,
 )
 from visconf.types import RunCell, RunStatus
 
@@ -25,49 +28,11 @@ class PlanningError(ValueError):
     """Raised when a plan conflicts with existing experiment state."""
 
 
-class RunManifestEntry(FrozenModel):
-    run_id: str
-    run_label: str
-    dataset: str
-    split: str
-    filter_id: str
-    strategy: str
-    relative_path: str
-    config_hash: str
-    status: RunStatus
-
-
-class ExperimentManifest(FrozenModel):
-    manifest_version: int = 1
-    experiment_group_id: str
-    created_at_utc: datetime
-    status: RunStatus
-    output_root: Path
-    group_config_hash: str
-    git_commit: str | None
-    git_dirty: bool | None
-    document_hashes: dict[str, str]
-    runs: tuple[RunManifestEntry, ...]
-
-
-class RunManifest(FrozenModel):
-    manifest_version: int = 1
-    experiment_group_id: str
-    run_id: str
-    run_label: str
-    created_at_utc: datetime
-    status: RunStatus
-    resolved_config: ResolvedRunConfig
-
-
 @dataclass(frozen=True, slots=True)
 class ExperimentPlan:
     group_dir: Path
     manifest: ExperimentManifest
     runs: tuple[ResolvedRunConfig, ...]
-
-
-ManifestT = TypeVar("ManifestT", bound=FrozenModel)
 
 
 def _utc_now() -> datetime:
@@ -113,40 +78,6 @@ def _git_state(repository_root: Path) -> tuple[str | None, bool | None]:
     if status.returncode != 0:
         return commit.stdout.strip(), None
     return commit.stdout.strip(), bool(status.stdout.strip())
-
-
-def _atomic_write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (
-        value.model_dump(mode="json") if hasattr(value, "model_dump") else value
-    )
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary = Path(handle.name)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
-
-
-def _read_model(path: Path, model: type[ManifestT]) -> ManifestT:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return model.model_validate(payload)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise PlanningError(f"cannot load manifest {path}: {exc}") from exc
 
 
 def _resolved_run(
@@ -285,28 +216,35 @@ def plan_experiment_group(
     manifest = ExperimentManifest(
         experiment_group_id=group_id,
         created_at_utc=created_at,
+        updated_at_utc=created_at,
         status=RunStatus.PLANNED,
         output_root=root,
         group_config_hash=config.group_config_hash,
         git_commit=commit,
         git_dirty=dirty,
         document_hashes=config.document_hashes,
+        shared_configuration={
+            "model": config.model.model_dump(mode="json"),
+            "hardware": config.hardware.model_dump(mode="json"),
+            "generation": config.generation.model_dump(mode="json"),
+            "scoring": config.scoring.model_dump(mode="json"),
+            "storage": config.storage.model_dump(mode="json"),
+            "schemas": config.schemas.model_dump(mode="json"),
+        },
         runs=tuple(_entry(run, group_dir) for run in runs),
     )
 
     for run in runs:
-        _atomic_write_json(
+        atomic_write_json(
             run.output_dir / "manifest.json",
-            RunManifest(
-                experiment_group_id=group_id,
-                run_id=run.run_id,
-                run_label=run.run_label,
-                created_at_utc=created_at,
-                status=RunStatus.PLANNED,
-                resolved_config=run,
+            build_run_manifest(
+                run,
+                created_at=created_at,
+                git_commit=commit,
+                git_dirty=dirty,
             ),
         )
-    _atomic_write_json(manifest_path, manifest)
+    atomic_write_json(manifest_path, manifest)
     return ExperimentPlan(group_dir=group_dir, manifest=manifest, runs=runs)
 
 
@@ -314,13 +252,13 @@ def load_experiment_plan(group_dir: str | Path) -> ExperimentPlan:
     """Load a previously planned experiment group and its resolved runs."""
 
     directory = Path(group_dir).resolve()
-    manifest = _read_model(
+    manifest = read_manifest(
         directory / "experiment_manifest.json", ExperimentManifest
     )
 
     runs: list[ResolvedRunConfig] = []
     for entry in manifest.runs:
-        run_manifest = _read_model(
+        run_manifest = read_manifest(
             directory / entry.relative_path / "manifest.json", RunManifest
         )
         run = run_manifest.resolved_config
