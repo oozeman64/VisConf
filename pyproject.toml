@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visconf"
+version = "0.1.0"
+description = "Predictor-aligned visual-confidence experiments for Qwen2.5-VL"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "Pillow>=10",
+    "pydantic>=2.8,<3",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[project.scripts]
+visconf = "visconf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
