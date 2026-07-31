@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from visconf.types import JsonValue, SamplingConfig, ScoringMode
+from visconf.types import SamplingConfig, ScoringMode
 
 
 INITIAL_DATASETS = frozenset({"mathverse", "mathvista", "mmmu_pro"})
@@ -30,6 +31,9 @@ class ConfigError(ValueError):
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ConfigModelT = TypeVar("ConfigModelT", bound=FrozenModel)
 
 
 class ExperimentGroupSettings(FrozenModel):
@@ -186,9 +190,26 @@ class ResolvedRunConfig(FrozenModel):
 def canonical_json(value: Any) -> str:
     """Return the canonical JSON representation used for configuration hashes."""
 
+    return json.dumps(
+        _jsonable(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return value.model_dump(mode="json")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def sha256_json(value: Any) -> str:
@@ -205,7 +226,7 @@ def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     return value
 
 
-def _load_model(model: type[FrozenModel], path: Path) -> FrozenModel:
+def _load_model(model: type[ConfigModelT], path: Path) -> ConfigModelT:
     try:
         return model.model_validate(_load_yaml_mapping(path))
     except ValueError as exc:
@@ -278,7 +299,6 @@ def load_experiment_group_config(path: str | Path) -> LoadedExperimentGroup:
     model = _load_model(
         ModelSettings, config_dir / "model" / f"{raw.model}.yaml"
     )
-    assert isinstance(model, ModelSettings)
     model = model.model_copy(
         update={
             "model_path": _resolve_path(model.model_path, repository_root),
@@ -295,7 +315,6 @@ def load_experiment_group_config(path: str | Path) -> LoadedExperimentGroup:
     hardware = _load_model(
         HardwareSettings, config_dir / "hardware" / f"{raw.hardware}.yaml"
     )
-    assert isinstance(hardware, HardwareSettings)
     if hardware.name != raw.hardware:
         raise ConfigError("hardware fragment name does not match its reference")
     if (
@@ -311,7 +330,6 @@ def load_experiment_group_config(path: str | Path) -> LoadedExperimentGroup:
         dataset = _load_model(
             DatasetSettings, config_dir / "datasets" / f"{name}.yaml"
         )
-        assert isinstance(dataset, DatasetSettings)
         if dataset.name != name:
             raise ConfigError(
                 f"dataset fragment {name!r} declares name {dataset.name!r}"
@@ -327,7 +345,6 @@ def load_experiment_group_config(path: str | Path) -> LoadedExperimentGroup:
         strategy = _load_model(
             SamplingSettings, config_dir / "sampling" / f"{name}.yaml"
         )
-        assert isinstance(strategy, SamplingSettings)
         if strategy.name != name:
             raise ConfigError(
                 f"sampling fragment {name!r} declares name {strategy.name!r}"

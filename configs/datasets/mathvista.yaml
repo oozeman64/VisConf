@@ -1,0 +1,8 @@
+name: mathvista
+adapter: mathvista
+source: ../MathVista/data/testmini-00000-of-00001-725687bf7a18d64b.parquet
+revision: null
+split: train
+filter_id: all
+filters: {}
+prompt_template: reasoning_boxed_v1

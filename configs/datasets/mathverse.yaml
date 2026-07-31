@@ -1,0 +1,9 @@
+name: mathverse
+adapter: mathverse
+source: ../MathVerse/testmini.parquet
+revision: null
+split: train
+filter_id: vision_intensive
+filters:
+  problem_version: Vision Intensive
+prompt_template: reasoning_boxed_v1

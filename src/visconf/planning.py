@@ -10,11 +10,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
-from pydantic import ConfigDict
-
-from visconf.config import LoadedExperimentGroup, ResolvedRunConfig, sha256_json
+from visconf.config import (
+    FrozenModel,
+    LoadedExperimentGroup,
+    ResolvedRunConfig,
+    sha256_json,
+)
 from visconf.types import RunCell, RunStatus
 
 
@@ -22,11 +25,7 @@ class PlanningError(ValueError):
     """Raised when a plan conflicts with existing experiment state."""
 
 
-class ManifestModel(ResolvedRunConfig.__base__):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class RunManifestEntry(ManifestModel):
+class RunManifestEntry(FrozenModel):
     run_id: str
     run_label: str
     dataset: str
@@ -38,7 +37,7 @@ class RunManifestEntry(ManifestModel):
     status: RunStatus
 
 
-class ExperimentManifest(ManifestModel):
+class ExperimentManifest(FrozenModel):
     manifest_version: int = 1
     experiment_group_id: str
     created_at_utc: datetime
@@ -51,7 +50,7 @@ class ExperimentManifest(ManifestModel):
     runs: tuple[RunManifestEntry, ...]
 
 
-class RunManifest(ManifestModel):
+class RunManifest(FrozenModel):
     manifest_version: int = 1
     experiment_group_id: str
     run_id: str
@@ -66,6 +65,9 @@ class ExperimentPlan:
     group_dir: Path
     manifest: ExperimentManifest
     runs: tuple[ResolvedRunConfig, ...]
+
+
+ManifestT = TypeVar("ManifestT", bound=FrozenModel)
 
 
 def _utc_now() -> datetime:
@@ -139,7 +141,7 @@ def _atomic_write_json(path: Path, value: Any) -> None:
             temporary.unlink()
 
 
-def _read_model(path: Path, model: type[ManifestModel]) -> ManifestModel:
+def _read_model(path: Path, model: type[ManifestT]) -> ManifestT:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return model.model_validate(payload)
@@ -175,16 +177,7 @@ def _resolved_run(
         "schemas": config.schemas,
         "document_hashes": config.document_hashes,
     }
-    config_hash = sha256_json(
-        {
-            key: (
-                value.model_dump(mode="json")
-                if hasattr(value, "model_dump")
-                else value
-            )
-            for key, value in payload.items()
-        }
-    )
+    config_hash = sha256_json(payload)
     return ResolvedRunConfig(**payload, config_hash=config_hash)
 
 
@@ -324,14 +317,12 @@ def load_experiment_plan(group_dir: str | Path) -> ExperimentPlan:
     manifest = _read_model(
         directory / "experiment_manifest.json", ExperimentManifest
     )
-    assert isinstance(manifest, ExperimentManifest)
 
     runs: list[ResolvedRunConfig] = []
     for entry in manifest.runs:
         run_manifest = _read_model(
             directory / entry.relative_path / "manifest.json", RunManifest
         )
-        assert isinstance(run_manifest, RunManifest)
         run = run_manifest.resolved_config
         if (
             run.experiment_group_id != manifest.experiment_group_id

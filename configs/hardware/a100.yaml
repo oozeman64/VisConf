@@ -1,0 +1,4 @@
+name: a100
+accelerator: a100
+memory_gb: 80
+max_rollout_microbatch_size: 16
