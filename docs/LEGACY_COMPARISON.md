@@ -55,6 +55,6 @@ forced into legacy equality.
 ## Acceptance rule
 
 Real-model smoke acceptance checks exact key alignment and storage schemas,
-compares retained token IDs across rollout microbatch sizes, and validates the
+compares retained token IDs across prompt/rollout batch shapes, and validates the
 direct probability overlap above on representative logits. Attention and hidden
 state are audited against the current normative definitions only.

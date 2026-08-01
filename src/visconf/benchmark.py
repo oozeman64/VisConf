@@ -16,6 +16,10 @@ import torch
 from visconf.config import ResolvedRunConfig
 from visconf.datasets import create_dataset_adapter
 from visconf.generation.engine import GenerationEngine
+from visconf.generation.scheduler import (
+    prompt_batch_telemetry,
+    schedule_prompt_batches,
+)
 from visconf.models.instrumentation import QwenInstrumentation
 from visconf.models.qwen25vl import QwenModelFacade
 from visconf.storage.manifest import (
@@ -23,7 +27,11 @@ from visconf.storage.manifest import (
     capture_environment,
     utc_now,
 )
-from visconf.types import PromptConfig, RolloutKey
+from visconf.types import (
+    PromptBatchWorkItem,
+    PromptConfig,
+    RolloutKey,
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -32,10 +40,22 @@ class BenchmarkError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkMeasurement:
-    requested_microbatch_size: int
+    requested_prompt_batch_size: int
+    effective_prompt_batch_size: int
+    requested_rollout_microbatch_size: int
+    effective_rollout_microbatch_size: int
+    maximum_active_decode_rows: int
     rollout_count: int
     prompt_count: int
     completed_prompt_count: int
+    prompt_batching_strategy: str
+    min_prompt_length: int
+    max_prompt_length: int
+    min_image_token_count: int
+    max_image_token_count: int
+    total_unpadded_prompt_tokens: int
+    total_padded_prompt_tokens: int
+    padding_fraction: float
     status: str
     prompt_seconds: float
     decode_seconds: float
@@ -45,6 +65,7 @@ class BenchmarkMeasurement:
     tokens_per_second: float | None
     oom_fallbacks: int
     retained_ids_sha256: str | None
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,11 +93,11 @@ class _TimingFacade:
     def __getattr__(self, name: str):
         return getattr(self.facade, name)
 
-    def _timed(self, field: str, operation, *args):
+    def _timed(self, field: str, operation, *args, **kwargs):
         torch.cuda.synchronize(self.facade.device)
         started = time.perf_counter()
         try:
-            return operation(*args)
+            return operation(*args, **kwargs)
         except torch.cuda.OutOfMemoryError:
             self.oom_fallbacks += 1
             raise
@@ -90,8 +111,13 @@ class _TimingFacade:
 
     def prefill(self, prepared, instrumentation):
         return self._timed(
+            "prompt_seconds", self.facade.prefill, prepared, instrumentation
+        )
+
+    def prefill_batch(self, prepared, instrumentation):
+        return self._timed(
             "prompt_seconds",
-            self.facade.prefill,
+            self.facade.prefill_batch,
             prepared,
             instrumentation,
         )
@@ -103,11 +129,19 @@ class _TimingFacade:
             self.oom_fallbacks += 1
             raise
 
-    def decode_step(self, *args):
+    def select_cache_sources(self, cache, indices):
+        try:
+            return self.facade.select_cache_sources(cache, indices)
+        except torch.cuda.OutOfMemoryError:
+            self.oom_fallbacks += 1
+            raise
+
+    def decode_step(self, *args, **kwargs):
         return self._timed(
             "decode_seconds",
             self.facade.decode_step,
             *args,
+            **kwargs,
         )
 
 
@@ -129,8 +163,10 @@ def _verify_hardware(run: ResolvedRunConfig) -> None:
         )
 
 
-def benchmark_candidates(run: ResolvedRunConfig) -> tuple[int, ...]:
-    return run.hardware.benchmark_microbatch_sizes
+def benchmark_candidates(
+    run: ResolvedRunConfig,
+) -> tuple[tuple[int, int], ...]:
+    return run.hardware.benchmark_batch_shapes
 
 
 def _keys(
@@ -173,7 +209,7 @@ def benchmark_run(
     run: ResolvedRunConfig,
     output_path: str | Path,
     *,
-    candidates: Sequence[int] | None = None,
+    candidates: Sequence[tuple[int, int]] | None = None,
     rollout_count: int | None = None,
     max_new_tokens: int | None = None,
     prompt_count: int = 1,
@@ -182,12 +218,17 @@ def benchmark_run(
 
     _verify_hardware(run)
     sizes = tuple(candidates or benchmark_candidates(run))
-    if not sizes or any(size <= 0 for size in sizes) or len(set(sizes)) != len(sizes):
-        raise BenchmarkError("benchmark candidates must be unique and positive")
-    count = max(sizes) if rollout_count is None else rollout_count
-    if count < max(sizes):
+    if (
+        not sizes
+        or any(prompt <= 0 or rollout <= 0 for prompt, rollout in sizes)
+        or len(set(sizes)) != len(sizes)
+    ):
+        raise BenchmarkError("benchmark batch shapes must be unique and positive")
+    largest_rollout = max(rollout for _, rollout in sizes)
+    count = largest_rollout if rollout_count is None else rollout_count
+    if count < largest_rollout:
         raise BenchmarkError(
-            "rollout_count must exercise the largest microbatch"
+            "rollout_count must exercise the largest rollout axis"
         )
 
     token_limit = (
@@ -199,6 +240,8 @@ def benchmark_run(
         raise BenchmarkError("max_new_tokens must be positive")
     if prompt_count <= 0:
         raise BenchmarkError("prompt_count must be positive")
+    if prompt_count < max(prompt for prompt, _ in sizes):
+        raise BenchmarkError("prompt_count must exercise the largest prompt axis")
 
     adapter = create_dataset_adapter(run.dataset.adapter)
     examples = tuple(
@@ -218,95 +261,143 @@ def benchmark_run(
     results = ()
     try:
         with QwenInstrumentation(facade.model) as instrumentation:
-            for size in sizes:
+            for prompt_size, rollout_size in sizes:
                 timed = _TimingFacade(facade)
                 engine = GenerationEngine(
                     timed,
                     instrumentation,
                     base_seed=run.base_seed,
                     max_new_tokens=token_limit,
-                    rollout_microbatch_size=size,
-                    seed_derivation_version=(
-                        run.schemas.seed_derivation_version
-                    ),
+                    rollout_microbatch_size=rollout_size,
+                    seed_derivation_version=run.schemas.seed_derivation_version,
                 )
                 torch.cuda.reset_peak_memory_stats(facade.device)
                 torch.cuda.synchronize(facade.device)
                 started = time.perf_counter()
-                completed_prompts = 0
                 retained = 0
+                completed_prompts = 0
                 ids_digest = hashlib.sha256()
+                prepared_items = []
                 try:
-                    for example in examples:
+                    for ordinal, example in enumerate(examples):
                         messages = adapter.build_messages(
                             example,
                             PromptConfig(run.dataset.prompt_template),
                         )
                         prepared = facade.prepare_example(messages)
-                        results = engine.generate_example(
-                            example,
-                            prepared,
-                            _keys(run, example.sample_id, count),
-                            run.sampling.as_domain(),
+                        prepared_items.append(
+                            PromptBatchWorkItem(
+                                example=example,
+                                sample_id=example.sample_id,
+                                canonical_source_ordinal=ordinal,
+                                prompt_record=prepared.prompt_record,
+                                token_groups=prepared.token_groups,
+                                image_token_count=int(
+                                    prepared.token_groups.image_positions.numel()
+                                ),
+                                pending_rollout_keys=_keys(
+                                    run, example.sample_id, count
+                                ),
+                                prepared=prepared,
+                                messages=tuple(messages),
+                            )
                         )
-                        for result in results:
+                    units = tuple(schedule_prompt_batches(
+                        prepared_items,
+                        prompt_batch_size=prompt_size,
+                        strategy=run.generation.prompt_batching_strategy,
+                        bucket_window_size=(
+                            run.generation.prompt_bucket_window_size
+                        ),
+                    ))
+                    all_telemetry = [
+                        prompt_batch_telemetry(
+                            unit, rollout_size, rollout_size
+                        )
+                        for unit in units
+                    ]
+                    for unit in units:
+                        for result in engine.generate_prompt_batch(
+                            unit, run.sampling.as_domain()
+                        ):
                             retained += _update_ids_hash(ids_digest, result)
-                        result = None
-                        completed_prompts += 1
-                        results = ()
-                        prepared = None
+                        completed_prompts += len(unit)
                     torch.cuda.synchronize(facade.device)
                     total = time.perf_counter() - started
-                    measurements.append(
-                        BenchmarkMeasurement(
-                            requested_microbatch_size=size,
-                            rollout_count=count,
-                            prompt_count=prompt_count,
-                            completed_prompt_count=completed_prompts,
-                            status=(
-                                "complete"
-                                if timed.oom_fallbacks == 0
-                                else "fallback"
-                            ),
-                            prompt_seconds=timed.prompt_seconds,
-                            decode_seconds=timed.decode_seconds,
-                            total_seconds=total,
-                            peak_allocated_bytes=(
-                                torch.cuda.max_memory_allocated(
-                                    facade.device
-                                )
-                            ),
-                            retained_tokens=retained,
-                            tokens_per_second=(
-                                retained / total if total > 0 else None
-                            ),
-                            oom_fallbacks=timed.oom_fallbacks,
-                            retained_ids_sha256=ids_digest.hexdigest(),
-                        )
+                    lengths = [
+                        item.prompt_record.prompt_token_count
+                        for item in prepared_items
+                    ]
+                    images = [item.image_token_count for item in prepared_items]
+                    unpadded = sum(
+                        item.total_unpadded_prompt_tokens
+                        for item in all_telemetry
                     )
+                    padded = sum(
+                        item.total_padded_prompt_tokens
+                        for item in all_telemetry
+                    )
+                    fallback = timed.oom_fallbacks
+                    measurements.append(BenchmarkMeasurement(
+                        requested_prompt_batch_size=prompt_size,
+                        effective_prompt_batch_size=(
+                            prompt_size if fallback == 0 else 0
+                        ),
+                        requested_rollout_microbatch_size=rollout_size,
+                        effective_rollout_microbatch_size=(
+                            rollout_size if fallback == 0 else 0
+                        ),
+                        maximum_active_decode_rows=prompt_size * rollout_size,
+                        rollout_count=count,
+                        prompt_count=prompt_count,
+                        completed_prompt_count=completed_prompts,
+                        prompt_batching_strategy=run.generation.prompt_batching_strategy,
+                        min_prompt_length=min(lengths),
+                        max_prompt_length=max(lengths),
+                        min_image_token_count=min(images),
+                        max_image_token_count=max(images),
+                        total_unpadded_prompt_tokens=unpadded,
+                        total_padded_prompt_tokens=padded,
+                        padding_fraction=(padded - unpadded) / padded,
+                        status="complete" if fallback == 0 else "fallback",
+                        prompt_seconds=timed.prompt_seconds,
+                        decode_seconds=timed.decode_seconds,
+                        total_seconds=total,
+                        peak_allocated_bytes=torch.cuda.max_memory_allocated(facade.device),
+                        retained_tokens=retained,
+                        tokens_per_second=retained / total if total > 0 else None,
+                        oom_fallbacks=fallback,
+                        retained_ids_sha256=ids_digest.hexdigest(),
+                    ))
                 except torch.cuda.OutOfMemoryError:
-                    measurements.append(
-                        BenchmarkMeasurement(
-                            requested_microbatch_size=size,
-                            rollout_count=count,
-                            prompt_count=prompt_count,
-                            completed_prompt_count=completed_prompts,
-                            status="oom",
-                            prompt_seconds=timed.prompt_seconds,
-                            decode_seconds=timed.decode_seconds,
-                            total_seconds=time.perf_counter() - started,
-                            peak_allocated_bytes=(
-                                torch.cuda.max_memory_allocated(
-                                    facade.device
-                                )
-                            ),
-                            retained_tokens=retained,
-                            tokens_per_second=None,
-                            oom_fallbacks=timed.oom_fallbacks,
-                            retained_ids_sha256=None,
-                        )
-                    )
                     instrumentation.cancel_step()
+                    measurements.append(BenchmarkMeasurement(
+                        requested_prompt_batch_size=prompt_size,
+                        effective_prompt_batch_size=0,
+                        requested_rollout_microbatch_size=rollout_size,
+                        effective_rollout_microbatch_size=0,
+                        maximum_active_decode_rows=prompt_size * rollout_size,
+                        rollout_count=count,
+                        prompt_count=prompt_count,
+                        completed_prompt_count=completed_prompts,
+                        prompt_batching_strategy=run.generation.prompt_batching_strategy,
+                        min_prompt_length=0,
+                        max_prompt_length=0,
+                        min_image_token_count=0,
+                        max_image_token_count=0,
+                        total_unpadded_prompt_tokens=0,
+                        total_padded_prompt_tokens=0,
+                        padding_fraction=0.0,
+                        status="oom",
+                        prompt_seconds=timed.prompt_seconds,
+                        decode_seconds=timed.decode_seconds,
+                        total_seconds=time.perf_counter() - started,
+                        peak_allocated_bytes=torch.cuda.max_memory_allocated(facade.device),
+                        retained_tokens=retained,
+                        tokens_per_second=None,
+                        oom_fallbacks=timed.oom_fallbacks,
+                        retained_ids_sha256=None,
+                    ))
                     torch.cuda.empty_cache()
     finally:
         del results

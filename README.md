@@ -41,7 +41,7 @@ visconf group --group <experiment_group_id>
 visconf score --group <experiment_group_id>
 ~~~
 
-For local RTX 4090 execution, use the conservative 24 GB profile:
+For local RTX 4090 execution, use the RTX 4090 24 GB profile:
 
 ~~~bash
 visconf plan --config configs/experiment_group_4090.yaml
@@ -116,3 +116,14 @@ Hardware benchmarking intentionally refuses to run when the active GPU does not
 match the resolved A100, H100, or RTX 4090 profile. Target measurements and persistent-volume
 restart verification therefore run on the actual RunPod host, using the scripts
 in `scripts/`.
+
+## Prompt-batched decoding
+
+Generation can prefill and decode multiple independent prompts in one scheduling
+unit. prompt_batch_size is the prompt axis and rollout_microbatch_size is the
+per-prompt rollout axis; max_active_decode_rows bounds their product. Supported
+schedulers are contiguous and bounded token_count_bucketed. The latter uses
+exact prompt-token and eligible image-pad counts with canonical source ordinal
+as its deterministic tie-breaker. Output identities, per-example shards,
+checkpoint-last publication, metric keys, and rollout seeds are unchanged.
+Frozen production configurations intentionally keep prompt_batch_size at 1.

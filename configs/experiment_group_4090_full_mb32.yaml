@@ -4,7 +4,7 @@ experiment_group:
   base_seed: 42
 
 model: qwen2_5_vl_3b
-hardware: rtx_4090_mb32
+hardware: rtx_4090
 
 datasets:
   - mathverse
@@ -17,7 +17,11 @@ strategies:
 
 generation:
   rollouts_per_example: 32
+  prompt_batch_size: 16
   rollout_microbatch_size: 32
+  prompt_batching_strategy: contiguous
+  prompt_bucket_window_size: null
+  prompt_scheduler_algorithm_version: 1
   max_new_tokens: 1024
 
 scoring:

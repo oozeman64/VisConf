@@ -44,7 +44,11 @@ class ExperimentGroupSettings(FrozenModel):
 
 class GenerationSettings(FrozenModel):
     rollouts_per_example: int = Field(default=32, gt=0)
+    prompt_batch_size: int = Field(default=1, gt=0)
     rollout_microbatch_size: int = Field(default=16, gt=0)
+    prompt_batching_strategy: Literal["contiguous", "token_count_bucketed"] = "contiguous"
+    prompt_bucket_window_size: int | None = Field(default=None, gt=0)
+    prompt_scheduler_algorithm_version: Literal[1] = 1
     max_new_tokens: int = Field(default=1024, gt=0)
 
     @model_validator(mode="after")
@@ -52,6 +56,17 @@ class GenerationSettings(FrozenModel):
         if self.rollout_microbatch_size > self.rollouts_per_example:
             raise ValueError(
                 "rollout_microbatch_size cannot exceed rollouts_per_example"
+            )
+        if self.prompt_batching_strategy == "contiguous":
+            if self.prompt_bucket_window_size is not None:
+                raise ValueError(
+                    "prompt_bucket_window_size applies only to token_count_bucketed"
+                )
+        elif self.prompt_bucket_window_size is None:
+            raise ValueError("token_count_bucketed requires prompt_bucket_window_size")
+        elif self.prompt_bucket_window_size < self.prompt_batch_size:
+            raise ValueError(
+                "prompt_bucket_window_size must be at least prompt_batch_size"
             )
         return self
 
@@ -126,6 +141,8 @@ class HardwareSettings(FrozenModel):
     default_rollout_microbatch_size: int = Field(gt=0)
     benchmark_microbatch_sizes: tuple[int, ...]
     max_rollout_microbatch_size: int = Field(gt=0)
+    max_active_decode_rows: int = Field(gt=0)
+    benchmark_batch_shapes: tuple[tuple[int, int], ...] = ()
 
     @model_validator(mode="after")
     def validate_microbatches(self) -> "HardwareSettings":
@@ -146,6 +163,21 @@ class HardwareSettings(FrozenModel):
             raise ValueError(
                 "largest benchmark microbatch must equal the hardware limit"
             )
+        shapes = self.benchmark_batch_shapes or tuple(
+            (1, value) for value in candidates
+        )
+        if len(set(shapes)) != len(shapes) or any(
+            prompt <= 0
+            or rollout <= 0
+            or rollout > self.max_rollout_microbatch_size
+            or prompt * rollout > self.max_active_decode_rows
+            for prompt, rollout in shapes
+        ):
+            raise ValueError(
+                "benchmark_batch_shapes must be unique valid batch shapes"
+            )
+        if not self.benchmark_batch_shapes:
+            object.__setattr__(self, "benchmark_batch_shapes", shapes)
         return self
 
 
@@ -347,6 +379,14 @@ def load_experiment_group_config(path: str | Path) -> LoadedExperimentGroup:
     ):
         raise ConfigError(
             "rollout_microbatch_size exceeds the selected hardware limit"
+        )
+    if (
+        raw.generation.prompt_batch_size
+        * raw.generation.rollout_microbatch_size
+        > hardware.max_active_decode_rows
+    ):
+        raise ConfigError(
+            "prompt_batch_size * rollout_microbatch_size exceeds max_active_decode_rows"
         )
 
     datasets: list[DatasetSettings] = []

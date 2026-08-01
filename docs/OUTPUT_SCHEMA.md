@@ -236,7 +236,9 @@ The run manifest contains at least:
 - Prompt-template configuration and hashes.
 - The single sampling strategy definition, including temperature, top-p, top-k,
   and repetition penalty.
-- Rollouts per example and rollout microbatch size.
+- Rollouts per example, prompt batch size, rollout microbatch size, prompt
+  batching strategy, bucket window, scheduler algorithm version, and hardware
+  maximum active decode rows.
 - Model dtype, metric reduction dtype, attention implementation, and device.
 - Python, PyTorch, Transformers, Datasets, PyArrow, CUDA, and
   `qwen_vl_utils` versions.
@@ -642,3 +644,9 @@ The view should be generated in DuckDB, Polars, or another analysis layer rather
 than persisted as a second authoritative copy. Any exported materialization is
 derived data and must record the source run ID, committed-shard set, and schema
 versions.
+
+Prompt-batching settings are manifest configuration, not primary table schema.
+Run and experiment manifests record prompt batch size, rollout microbatch size,
+strategy, bounded bucket window, scheduler algorithm version, and the hardware
+maximum active decode rows. These settings do not change output or metric schema
+versions because table keys and physical columns are unchanged.

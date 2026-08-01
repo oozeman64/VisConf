@@ -2,5 +2,15 @@ name: a100_40gb
 accelerator: a100
 memory_gb: 40
 default_rollout_microbatch_size: 4
-benchmark_microbatch_sizes: [4, 8]
+benchmark_microbatch_sizes:
+- 4
+- 8
 max_rollout_microbatch_size: 8
+max_active_decode_rows: 8
+benchmark_batch_shapes:
+- - 1
+  - 4
+- - 1
+  - 8
+- - 2
+  - 4

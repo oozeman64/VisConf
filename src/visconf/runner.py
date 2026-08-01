@@ -18,6 +18,8 @@ import pyarrow.parquet as pq
 from visconf.config import ResolvedRunConfig
 from visconf.datasets import create_dataset_adapter
 from visconf.generation.engine import GenerationEngine, GenerationError
+from visconf.metrics.validation import MetricInputError
+from visconf.generation.scheduler import schedule_prompt_batches
 from visconf.models.instrumentation import (
     InstrumentationError,
     QwenInstrumentation,
@@ -49,6 +51,7 @@ from visconf.types import (
     ExampleRecord,
     FailureRecord,
     ImageRecord,
+    PromptBatchWorkItem,
     PromptConfig,
     RolloutKey,
     RunStatus,
@@ -217,7 +220,12 @@ def _generate_with_rollout_isolation(
             )
         )
         return tuple(completed), ()
-    except (InstrumentationError, QwenFacadeError, GenerationError):
+    except (
+        InstrumentationError,
+        QwenFacadeError,
+        GenerationError,
+        MetricInputError,
+    ):
         raise
     except Exception:
         completed_keys = {bundle.generation.key for bundle in completed}
@@ -237,7 +245,12 @@ def _generate_with_rollout_isolation(
                 )
             )
             completed.append(bundle)
-        except (InstrumentationError, QwenFacadeError, GenerationError):
+        except (
+            InstrumentationError,
+            QwenFacadeError,
+            GenerationError,
+            MetricInputError,
+        ):
             raise
         except Exception as exc:
             failures.append((key, exc, traceback.format_exc()))
@@ -438,23 +451,16 @@ def execute_run(
                         run.schemas.seed_derivation_version
                     ),
                 )
-                for example, persisted_row in _validated_examples(
-                    run,
-                    dataset_adapter,
-                    example_rows,
-                ):
-                    current_example = example
-                    log_event(
-                        logger,
-                        "example_started",
-                        experiment_group_id=run.experiment_group_id,
-                        run_id=run.run_id,
-                        dataset=run.dataset.name,
-                        split=run.dataset.split,
-                        strategy=run.sampling.name,
-                        sample_id=example.sample_id,
-                    )
-                    try:
+                def pending_prompt_work():
+                    nonlocal current_example, skipped, stage, example_failures
+                    for ordinal, (example, persisted_row) in enumerate(
+                        _validated_examples(
+                            run,
+                            dataset_adapter,
+                            example_rows,
+                        )
+                    ):
+                        current_example = example
                         pending_indices = tuple(
                             index
                             for index in range(
@@ -468,56 +474,157 @@ def execute_run(
                             - len(pending_indices)
                         )
                         if not pending_indices:
-                            log_event(
-                                logger,
-                                "example_completed",
-                                run_id=run.run_id,
+                            continue
+                        stage = "prompt"
+                        try:
+                            messages = dataset_adapter.build_messages(
+                                example,
+                                PromptConfig(run.dataset.prompt_template),
+                            )
+                            prepared = model_facade.prepare_example(messages)
+                            persisted_record = _example_record(
+                                run,
+                                example,
+                                prepared,
+                                dataset_adapter.ground_truth(example),
+                            )
+                            if not _prompt_matches_row(
+                                persisted_record, persisted_row
+                            ):
+                                raise RunnerError(
+                                    "rendered prompt differs from examples.parquet"
+                                )
+                            yield PromptBatchWorkItem(
+                                example=example,
                                 sample_id=example.sample_id,
-                                resumed=True,
+                                canonical_source_ordinal=ordinal,
+                                prompt_record=prepared.prompt_record,
+                                token_groups=prepared.token_groups,
+                                image_token_count=int(
+                                    prepared.token_groups.image_positions.numel()
+                                ),
+                                pending_rollout_keys=tuple(
+                                    _rollout_key(
+                                        run, example.sample_id, index
+                                    )
+                                    for index in pending_indices
+                                ),
+                                prepared=prepared,
+                                messages=tuple(messages),
+                            )
+                        except (QwenFacadeError, InstrumentationError):
+                            raise
+                        except Exception as exc:
+                            example_failures += 1
+                            append_failure(
+                                run.output_dir / "failures.jsonl",
+                                _failure(
+                                    run, attempt, stage, exc, example
+                                ),
                             )
                             continue
 
-                        stage = "prompt"
-                        messages = dataset_adapter.build_messages(
-                            example,
-                            PromptConfig(run.dataset.prompt_template),
-                        )
-                        prepared = model_facade.prepare_example(messages)
-                        persisted_record = _example_record(
-                            run,
-                            example,
-                            prepared,
-                            dataset_adapter.ground_truth(example),
-                        )
-                        if not _prompt_matches_row(
-                            persisted_record,
-                            persisted_row,
+                units = schedule_prompt_batches(
+                    pending_prompt_work(),
+                    prompt_batch_size=run.generation.prompt_batch_size,
+                    strategy=run.generation.prompt_batching_strategy,
+                    bucket_window_size=(
+                        run.generation.prompt_bucket_window_size
+                    ),
+                )
+                for unit in units:
+                    stage = "generation"
+                    current_example = unit[0].example
+                    completed_by_sample: dict[str, list[Any]] = {
+                        item.sample_id: [] for item in unit
+                    }
+                    failures_by_sample: dict[
+                        str, list[tuple[RolloutKey, Exception, str]]
+                    ] = {item.sample_id: [] for item in unit}
+                    try:
+                        if len(unit) > 1 and hasattr(
+                            engine, "generate_prompt_batch"
                         ):
-                            raise RunnerError(
-                                "rendered prompt differs from examples.parquet"
-                            )
-
-                        stage = "generation"
-                        rollout_keys = tuple(
-                            _rollout_key(run, example.sample_id, index)
-                            for index in pending_indices
-                        )
-                        bundles, rollout_failures = (
-                            _generate_with_rollout_isolation(
-                                engine,
-                                model_facade,
-                                example,
-                                prepared,
-                                messages,
-                                rollout_keys,
+                            bundles = engine.generate_prompt_batch(
+                                unit,
                                 run.sampling.as_domain(),
                             )
-                        )
-                        for (
-                            failed_key,
-                            failure_exc,
-                            failure_traceback,
-                        ) in rollout_failures:
+                            for bundle in bundles:
+                                completed_by_sample[
+                                    bundle.generation.key.sample_id
+                                ].append(bundle)
+                        else:
+                            for item in unit:
+                                bundles, failures = (
+                                    _generate_with_rollout_isolation(
+                                        engine,
+                                        model_facade,
+                                        item.example,
+                                        item.prepared,
+                                        list(item.messages),
+                                        item.pending_rollout_keys,
+                                        run.sampling.as_domain(),
+                                    )
+                                )
+                                completed_by_sample[item.sample_id].extend(
+                                    bundles
+                                )
+                                failures_by_sample[item.sample_id].extend(
+                                    failures
+                                )
+                    except (
+                        InstrumentationError,
+                        QwenFacadeError,
+                        GenerationError,
+                        MetricInputError,
+                    ):
+                        raise
+                    except Exception:
+                        # The scheduling unit is uncommitted; isolate prompts,
+                        # then individual rollouts using freshly prepared inputs.
+                        for item in unit:
+                            try:
+                                retry_prepared = model_facade.prepare_example(
+                                    list(item.messages)
+                                )
+                                bundles, failures = (
+                                    _generate_with_rollout_isolation(
+                                        engine,
+                                        model_facade,
+                                        item.example,
+                                        retry_prepared,
+                                        list(item.messages),
+                                        item.pending_rollout_keys,
+                                        run.sampling.as_domain(),
+                                    )
+                                )
+                                completed_by_sample[item.sample_id].extend(
+                                    bundles
+                                )
+                                failures_by_sample[item.sample_id].extend(
+                                    failures
+                                )
+                            except (
+                                InstrumentationError,
+                                QwenFacadeError,
+                                GenerationError,
+                                MetricInputError,
+                            ):
+                                raise
+                            except Exception as exc:
+                                failures_by_sample[item.sample_id].append(
+                                    (
+                                        item.pending_rollout_keys[0],
+                                        exc,
+                                        traceback.format_exc(),
+                                    )
+                                )
+
+                    for item in unit:
+                        current_example = item.example
+                        for failed_key, failure_exc, failure_traceback in (
+                            failures_by_sample[item.sample_id]
+                        ):
                             example_failures += 1
                             append_failure(
                                 run.output_dir / "failures.jsonl",
@@ -526,11 +633,19 @@ def execute_run(
                                     attempt,
                                     "generation",
                                     failure_exc,
-                                    example,
+                                    item.example,
                                     failed_key.rollout_index,
                                     failure_traceback,
                                 ),
                             )
+                        bundles = tuple(
+                            sorted(
+                                completed_by_sample[item.sample_id],
+                                key=lambda bundle: (
+                                    bundle.generation.key.rollout_index
+                                ),
+                            )
+                        )
                         if not bundles:
                             continue
                         successful_indices = tuple(
@@ -538,7 +653,7 @@ def execute_run(
                             for bundle in bundles
                         )
                         core_shard_id = _shard_id(
-                            example.sample_id,
+                            item.sample_id,
                             successful_indices,
                         )
                         stage = "core_commit"
@@ -547,23 +662,13 @@ def execute_run(
                             attempt,
                             bundles,
                         )
-                        log_event(
-                            logger,
-                            "core_shard_committed",
-                            run_id=run.run_id,
-                            dataset=run.dataset.name,
-                            strategy=run.sampling.name,
-                            sample_id=example.sample_id,
-                            shard_id=core_shard_id,
-                            rollout_count=len(bundles),
-                        )
                         if run.scoring.mode is ScoringMode.ONLINE:
                             stage = "scoring"
                             try:
                                 score_completed_rollouts(
                                     run,
                                     dataset_adapter,
-                                    {example.sample_id: example},
+                                    {item.sample_id: item.example},
                                     bundles,
                                     core_shard_id=core_shard_id,
                                     attempt_id=attempt,
@@ -576,40 +681,18 @@ def execute_run(
                                         attempt,
                                         stage,
                                         exc,
-                                        example,
+                                        item.example,
                                     ),
                                 )
                         log_event(
                             logger,
                             "example_completed",
                             run_id=run.run_id,
-                            dataset=run.dataset.name,
-                            strategy=run.sampling.name,
-                            sample_id=example.sample_id,
+                            sample_id=item.sample_id,
                             shard_id=core_shard_id,
+                            prompt_batch_size=len(unit),
                         )
-                    except (
-                        InstrumentationError,
-                        QwenFacadeError,
-                        GenerationError,
-                    ):
-                        raise
-                    except Exception as exc:
-                        example_failures += 1
-                        append_failure(
-                            run.output_dir / "failures.jsonl",
-                            _failure(run, attempt, stage, exc, example),
-                        )
-                        log_event(
-                            logger,
-                            "failure_recorded",
-                            run_id=run.run_id,
-                            sample_id=example.sample_id,
-                            stage=stage,
-                            exception_type=type(exc).__name__,
-                        )
-                    finally:
-                        stage = "generation"
+                    stage = "generation"
 
             stage = "completion"
             final_resume = build_resume_index(run)

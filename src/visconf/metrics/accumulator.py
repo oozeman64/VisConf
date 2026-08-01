@@ -112,21 +112,17 @@ class _BatchedScenarioAttentionAccumulator:
         self.valid_rows: torch.Tensor | None = None
         self.head_count = 0
 
-    def add(self, layer_number: int, rows: torch.Tensor) -> None:
+    def add(
+        self,
+        layer_number: int,
+        layer_sum: torch.Tensor,
+        valid_rows: torch.Tensor,
+        head_count: int,
+    ) -> None:
         self.seen_layers.add(layer_number)
-        valid_rows = torch.isfinite(rows).all(dim=(1, 2)) & ~torch.any(
-            rows < -ATTENTION_EPSILON,
-            dim=(1, 2),
-        )
-        sanitized = torch.where(
-            valid_rows[:, None, None],
-            rows.clamp_min(0),
-            torch.zeros_like(rows),
-        )
-        layer_sum = sanitized.sum(dim=1)
         if self.vector_sum is None:
-            self.vector_sum = layer_sum
-            self.valid_rows = valid_rows
+            self.vector_sum = layer_sum.clone()
+            self.valid_rows = valid_rows.clone()
         elif self.vector_sum.shape != layer_sum.shape:
             raise MetricInputError(
                 "attention key width changed within one forward pass"
@@ -136,7 +132,7 @@ class _BatchedScenarioAttentionAccumulator:
             if self.valid_rows is None:
                 raise MetricInputError("attention validity state is missing")
             self.valid_rows.logical_and_(valid_rows)
-        self.head_count += rows.shape[1]
+        self.head_count += head_count
 
     def finalize(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.seen_layers != self.expected_layers:
@@ -190,9 +186,24 @@ class BatchedAttentionAccumulator:
             raise MetricInputError("attention rows must have a floating-point dtype")
         self._seen_layers.add(layer_number)
         rows = predictor_attention_rows.detach().to(dtype=torch.float32)
+        valid_rows = torch.isfinite(rows).all(dim=(1, 2)) & ~torch.any(
+            rows < -ATTENTION_EPSILON,
+            dim=(1, 2),
+        )
+        sanitized = torch.where(
+            valid_rows[:, None, None],
+            rows.clamp_min(0),
+            torch.zeros_like(rows),
+        )
+        layer_sum = sanitized.sum(dim=1)
         for name, accumulator in self._scenarios.items():
             if layer_number in ATTENTION_SCENARIO_LAYERS[name]:
-                accumulator.add(layer_number, rows)
+                accumulator.add(
+                    layer_number,
+                    layer_sum,
+                    valid_rows,
+                    rows.shape[1],
+                )
 
     @torch.inference_mode()
     def finalize(

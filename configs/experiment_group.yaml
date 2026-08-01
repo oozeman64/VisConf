@@ -2,36 +2,33 @@ experiment_group:
   id: null
   output_root: outputs
   base_seed: 42
-
 model: qwen2_5_vl_3b
 hardware: h100
-
 datasets:
-  - mathverse
-  - mathvista
-  - mmmu_pro
-
+- mathverse
+- mathvista
+- mmmu_pro
 strategies:
-  - diverse
-  - concentrated
-
+- diverse
+- concentrated
 generation:
   rollouts_per_example: 32
+  prompt_batch_size: 1
   rollout_microbatch_size: 16
+  prompt_batching_strategy: contiguous
+  prompt_bucket_window_size: null
+  prompt_scheduler_algorithm_version: 1
   max_new_tokens: 1024
-
 scoring:
   mode: offline
   scorer_name: dataset_default
-  scorer_version: "1"
-
+  scorer_version: '1'
 storage:
   compression: zstd
   compression_level: 3
   target_row_group_size: 65536
   use_dictionary: true
   write_statistics: true
-
 schemas:
   output_schema_version: 1
   metric_schema_version: 1

@@ -47,7 +47,7 @@ def test_full_4090_config_resolves_the_six_run_matrix_at_microbatch_32(
 ) -> None:
     config = load_experiment_group_config(FULL_4090_MB32_CONFIG)
 
-    assert config.hardware.name == "rtx_4090_mb32"
+    assert config.hardware.name == "rtx_4090"
     assert config.hardware.accelerator == "rtx 4090"
     assert config.hardware.max_rollout_microbatch_size == 32
     assert config.hardware.benchmark_microbatch_sizes == (32,)

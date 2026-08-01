@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 import torch
+import yaml
 
 from visconf.config import (
     GenerationSettings,
@@ -65,7 +66,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=ROOT / "configs" / "experiment_group_4090.yaml",
+        default=ROOT / "configs" / "experiment_group.yaml",
+    )
+    parser.add_argument(
+        "--hardware-config",
+        type=Path,
+        default=ROOT / "configs" / "hardware" / "rtx_4090.yaml",
     )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--group-id")
@@ -74,6 +80,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompts", type=int, default=1)
     parser.add_argument("--rollouts", type=int, default=16)
     parser.add_argument("--microbatch", type=int, default=8)
+    parser.add_argument("--prompt-batch-size", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     return parser
 
@@ -100,9 +107,16 @@ def _group_hash(loaded, hardware, generation) -> str:
 
 def _resolved_config(args):
     loaded = load_experiment_group_config(args.config)
+    hardware_base = HardwareSettings.model_validate(
+        yaml.safe_load(args.hardware_config.read_text(encoding="utf-8"))
+    )
+    loaded = loaded.model_copy(update={"hardware": hardware_base})
     generation = GenerationSettings(
         rollouts_per_example=args.rollouts,
+        prompt_batch_size=args.prompt_batch_size,
         rollout_microbatch_size=args.microbatch,
+        prompt_batching_strategy="contiguous",
+        prompt_bucket_window_size=None,
         max_new_tokens=args.max_new_tokens,
     )
     candidates = tuple(
@@ -119,6 +133,8 @@ def _resolved_config(args):
             "default_rollout_microbatch_size": args.microbatch,
             "benchmark_microbatch_sizes": candidates,
             "max_rollout_microbatch_size": candidates[-1],
+            "max_active_decode_rows": max(loaded.hardware.max_active_decode_rows, args.prompt_batch_size * args.microbatch),
+            "benchmark_batch_shapes": tuple((args.prompt_batch_size, value) for value in candidates),
         }
     )
     return loaded.model_copy(

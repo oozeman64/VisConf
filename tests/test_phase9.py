@@ -18,6 +18,7 @@ from visconf.config import (
 )
 from visconf.datasets.mathverse import MathVerseAdapter
 from visconf.generation.engine import GenerationEngine
+from visconf.generation.scheduler import schedule_prompt_batches
 from visconf.metrics.probability import compute_probability_metrics
 from visconf.models.instrumentation import (
     QwenInstrumentation,
@@ -37,6 +38,7 @@ from visconf.storage.transaction import CoreShardTransaction
 from visconf.types import (
     ExampleRecord,
     ImageRecord,
+    PromptBatchWorkItem,
     PromptConfig,
     RolloutKey,
 )
@@ -362,3 +364,130 @@ def test_real_two_rollout_storage_resume_and_cleanup(tmp_path):
         gc.collect()
         torch.cuda.empty_cache()
         assert torch.cuda.memory_allocated() < allocated_with_model / 4
+
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_real_two_prompt_batched_decode_matches_prompt_batch_one(tmp_path):
+    loaded = load_experiment_group_config(CONFIG)
+    plan = plan_experiment_group(
+        loaded,
+        experiment_group_id="exp-real-prompt-batch",
+        output_root=tmp_path,
+    )
+    run = next(
+        item for item in plan.runs
+        if item.dataset.name == "mathverse"
+        and item.sampling.name == "concentrated"
+    )
+    adapter = MathVerseAdapter()
+    examples = tuple(islice(adapter.load_examples(run.dataset), 2))
+    assert len(examples) == 2
+    facade = QwenModelFacade.load(run.model)
+    layers = discover_decoder_layers(facade.model)
+    originals = tuple(layer.forward for layer in layers)
+    baseline = ()
+    batched = ()
+    bucketed = ()
+    try:
+        items = []
+        for ordinal, example in enumerate(examples):
+            messages = adapter.build_messages(
+                example,
+                PromptConfig(run.dataset.prompt_template),
+            )
+            prepared = facade.prepare_example(messages)
+            items.append(PromptBatchWorkItem(
+                example=example,
+                sample_id=example.sample_id,
+                canonical_source_ordinal=ordinal,
+                prompt_record=prepared.prompt_record,
+                token_groups=prepared.token_groups,
+                image_token_count=int(
+                    prepared.token_groups.image_positions.numel()
+                ),
+                pending_rollout_keys=keys_for(run, example.sample_id),
+                prepared=prepared,
+                messages=tuple(messages),
+            ))
+        assert len({
+            item.prompt_record.prompt_token_count for item in items
+        }) == 2
+        with QwenInstrumentation(facade.model) as instrumentation:
+            engine = GenerationEngine(
+                facade,
+                instrumentation,
+                base_seed=run.base_seed,
+                max_new_tokens=2,
+                rollout_microbatch_size=2,
+            )
+            baseline = tuple(
+                bundle
+                for item in items
+                for bundle in engine.generate_prompt_batch(
+                    (item,), run.sampling.as_domain()
+                )
+            )
+            batched = engine.generate_prompt_batch(
+                tuple(items), run.sampling.as_domain()
+            )
+            (bucketed_unit,) = tuple(schedule_prompt_batches(
+                items,
+                prompt_batch_size=2,
+                strategy="token_count_bucketed",
+                bucket_window_size=2,
+            ))
+            bucketed = engine.generate_prompt_batch(
+                bucketed_unit, run.sampling.as_domain()
+            )
+        identity = lambda bundle: (
+            bundle.generation.key.sample_id,
+            bundle.generation.key.rollout_index,
+        )
+        assert {
+            identity(bundle): bundle.generation.generated_token_ids
+            for bundle in baseline
+        } == {
+            identity(bundle): bundle.generation.generated_token_ids
+            for bundle in batched
+        }
+        assert {
+            identity(bundle): bundle.generation.generated_token_ids
+            for bundle in batched
+        } == {
+            identity(bundle): bundle.generation.generated_token_ids
+            for bundle in bucketed
+        }
+        assert all(
+            tuple(row.key for row in bundle.tokens)
+            == tuple(row.key for row in bundle.probability)
+            == tuple(row.key for row in bundle.attention)
+            == tuple(row.key for row in bundle.hidden_state)
+            for bundle in batched
+        )
+        for bundle in batched:
+            prompt_count = next(
+                item.prompt_record.prompt_token_count
+                for item in items
+                if item.sample_id == bundle.generation.key.sample_id
+            )
+            for offset, token in enumerate(bundle.tokens):
+                assert token.predictor_position == (
+                    prompt_count - 1 if offset == 0
+                    else prompt_count + offset - 1
+                )
+                assert token.context_length == prompt_count + offset
+                assert bundle.attention[offset].n_generated_text_tokens == offset
+    finally:
+        assert all(
+            layer.forward == original
+            for layer, original in zip(layers, originals, strict=True)
+        )
+        del baseline
+        del batched
+        del bucketed
+        del facade
+        del layers
+        del originals
+        gc.collect()
+        torch.cuda.empty_cache()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 import math
-from typing import TYPE_CHECKING, Mapping, TypeAlias
+from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
 
 import torch
 from PIL import Image
@@ -164,6 +164,55 @@ class TokenGroups:
     prompt_text_positions: torch.LongTensor
     prompt_last_position: int
     prompt_token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PromptBatchWorkItem:
+    """One independently identified prompt in a scheduling unit."""
+
+    example: Example
+    sample_id: str
+    canonical_source_ordinal: int
+    prompt_record: PromptRecord
+    token_groups: TokenGroups
+    image_token_count: int
+    pending_rollout_keys: tuple[RolloutKey, ...]
+    prepared: Any
+    messages: tuple[dict[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.sample_id != self.example.sample_id:
+            raise ValueError("prompt work sample_id differs from its example")
+        _non_negative_int(self.canonical_source_ordinal, "canonical_source_ordinal")
+        if self.image_token_count != int(self.token_groups.image_positions.numel()):
+            raise ValueError("image_token_count must equal eligible image positions")
+        if any(key.sample_id != self.sample_id for key in self.pending_rollout_keys):
+            raise ValueError("pending rollout key belongs to another prompt")
+
+
+@dataclass(slots=True)
+class DecodeRowMapping:
+    """Explicit identity and mutable state for one flattened model row."""
+
+    model_row: int
+    prompt_row: int
+    sample_id: str
+    rollout_key: RolloutKey
+    rollout_state: Any
+
+
+@dataclass(frozen=True, slots=True)
+class PromptBatchTelemetry:
+    prompt_count: int
+    min_prompt_length: int
+    max_prompt_length: int
+    total_unpadded_prompt_tokens: int
+    total_padded_prompt_tokens: int
+    padding_fraction: float
+    min_image_token_count: int
+    max_image_token_count: int
+    configured_rollout_rows: int
+    effective_rollout_rows: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,6 +29,23 @@ class PreparedQwenPrompt:
     model_inputs: dict[str, torch.Tensor]
     prompt_record: PromptRecord
     token_groups: TokenGroups
+    messages: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(slots=True)
+class PreparedQwenBatch:
+    prompts: tuple[PreparedQwenPrompt, ...]
+    model_inputs: dict[str, torch.Tensor]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchedPrefillResult:
+    raw_logits: torch.Tensor
+    cache: Cache
+    observations: StepObservations
+    attention_mask: torch.Tensor
+    rope_deltas: torch.Tensor
+    logical_context_lengths: torch.Tensor
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +137,7 @@ class QwenModelFacade:
             videos=video_inputs,
             padding=False,
             return_tensors="pt",
-        ).to(self.device)
+        )
         if "attention_mask" not in batch:
             batch["attention_mask"] = torch.ones_like(batch["input_ids"])
 
@@ -145,6 +162,142 @@ class QwenModelFacade:
             },
             prompt_record=prompt_record,
             token_groups=token_groups,
+            messages=tuple(messages),
+        )
+
+    def prepare_batch(
+        self,
+        prompts: tuple[PreparedQwenPrompt, ...],
+    ) -> PreparedQwenBatch:
+        """Left-pad independently prepared multimodal prompts into one batch."""
+        if not prompts:
+            raise QwenFacadeError("prompt batch must be non-empty")
+        refreshed = []
+        for prompt in prompts:
+            needs_visuals = bool(prompt.token_groups.image_positions.numel())
+            has_visuals = any(
+                key in prompt.model_inputs for key in self._VISION_KEYS
+            )
+            if needs_visuals and not has_visuals:
+                if not prompt.messages:
+                    raise QwenFacadeError(
+                        "prepared prompt visual tensors were already released"
+                    )
+                replacement = self.prepare_example(list(prompt.messages))
+                if (
+                    replacement.prompt_record.prompt_token_ids
+                    != prompt.prompt_record.prompt_token_ids
+                ):
+                    raise QwenFacadeError(
+                        "reprepared prompt IDs differ from the original prompt"
+                    )
+                refreshed.append(replacement)
+            else:
+                refreshed.append(prompt)
+        prompts = tuple(refreshed)
+        pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer.eos_token_id
+        if pad_id is None:
+            raise QwenFacadeError("tokenizer has no padding token")
+        max_length = max(
+            prompt.model_inputs["input_ids"].shape[1] for prompt in prompts
+        )
+        ids_rows = []
+        mask_rows = []
+        for prompt in prompts:
+            ids = prompt.model_inputs["input_ids"][0]
+            mask = prompt.model_inputs["attention_mask"][0]
+            valid = ids[mask == 1]
+            expected = torch.tensor(
+                prompt.prompt_record.prompt_token_ids,
+                dtype=valid.dtype,
+                device=valid.device,
+            )
+            if not torch.equal(valid, expected):
+                raise QwenFacadeError(
+                    "prepared unpadded prompt IDs differ from PromptRecord"
+                )
+            padding = max_length - int(valid.numel())
+            ids_rows.append(torch.cat((
+                torch.full((padding,), int(pad_id), dtype=ids.dtype, device=ids.device),
+                valid,
+            )))
+            mask_rows.append(torch.cat((
+                torch.zeros((padding,), dtype=mask.dtype, device=mask.device),
+                torch.ones((valid.numel(),), dtype=mask.dtype, device=mask.device),
+            )))
+        combined = {
+            "input_ids": torch.stack(ids_rows),
+            "attention_mask": torch.stack(mask_rows),
+        }
+        keys = set().union(*(prompt.model_inputs for prompt in prompts))
+        for key in keys - {"input_ids", "attention_mask"}:
+            values = [
+                prompt.model_inputs[key]
+                for prompt in prompts
+                if key in prompt.model_inputs
+            ]
+            if values:
+                combined[key] = torch.cat(values, dim=0)
+        for row, prompt in enumerate(prompts):
+            valid = combined["input_ids"][row][combined["attention_mask"][row] == 1]
+            if tuple(int(value) for value in valid.tolist()) != prompt.prompt_record.prompt_token_ids:
+                raise QwenFacadeError(
+                    "batched processor padding changed prompt token IDs"
+                )
+        return PreparedQwenBatch(prompts=prompts, model_inputs=combined)
+
+    @torch.inference_mode()
+    def prefill_batch(
+        self,
+        prepared: PreparedQwenBatch,
+        instrumentation: QwenInstrumentation,
+    ) -> BatchedPrefillResult:
+        inputs = {
+            key: value.to(self.device)
+            for key, value in prepared.model_inputs.items()
+        }
+        sequence_length = inputs["input_ids"].shape[1]
+        cache_position = torch.arange(
+            sequence_length, device=self.device, dtype=torch.long
+        )
+        model_inputs = self.model.prepare_inputs_for_generation(
+            **inputs, cache_position=cache_position, use_cache=True
+        )
+        groups = tuple(prompt.token_groups for prompt in prepared.prompts)
+        instrumentation.begin_prefill(groups, inputs["attention_mask"])
+        try:
+            output = self.model(
+                **model_inputs,
+                output_attentions=False,
+                return_dict=True,
+                logits_to_keep=1,
+            )
+            observations = instrumentation.finish_step()
+        except BaseException:
+            instrumentation.cancel_step()
+            raise
+        for prompt in prepared.prompts:
+            for key in self._VISION_KEYS:
+                prompt.model_inputs.pop(key, None)
+        for key in self._VISION_KEYS:
+            prepared.model_inputs.pop(key, None)
+        if output.past_key_values is None or output.rope_deltas is None:
+            raise QwenFacadeError("batched prefill did not return cache and rope deltas")
+        if not bool(torch.all(inputs["attention_mask"][:, -1] == 1)):
+            raise QwenFacadeError(
+                "Qwen cached generation requires an unmasked final physical column"
+            )
+        rope_deltas = output.rope_deltas.detach().clone()
+        self.model.model.rope_deltas = rope_deltas
+        return BatchedPrefillResult(
+            raw_logits=output.logits[:, -1, :].detach(),
+            cache=output.past_key_values,
+            observations=observations,
+            attention_mask=inputs["attention_mask"].detach().clone(),
+            rope_deltas=rope_deltas,
+            logical_context_lengths=inputs["attention_mask"].sum(dim=1).to(torch.long),
         )
 
     @torch.inference_mode()
@@ -153,7 +306,10 @@ class QwenModelFacade:
         prepared: PreparedQwenPrompt,
         instrumentation: QwenInstrumentation,
     ) -> PrefillResult:
-        inputs = dict(prepared.model_inputs)
+        inputs = {
+            key: value.to(self.device)
+            for key, value in prepared.model_inputs.items()
+        }
         sequence_length = inputs["input_ids"].shape[1]
         cache_position = torch.arange(
             sequence_length,
@@ -180,9 +336,8 @@ class QwenModelFacade:
         except BaseException:
             instrumentation.cancel_step()
             raise
-        finally:
-            for key in self._VISION_KEYS:
-                prepared.model_inputs.pop(key, None)
+        for key in self._VISION_KEYS:
+            prepared.model_inputs.pop(key, None)
 
         if output.past_key_values is None or output.rope_deltas is None:
             raise QwenFacadeError("prefill did not return cache and rope deltas")
@@ -205,6 +360,20 @@ class QwenModelFacade:
         cache.batch_repeat_interleave(batch_size)
         return cache
 
+    def select_cache_sources(
+        self,
+        base_cache: Cache,
+        source_indices: torch.Tensor,
+    ) -> Cache:
+        """Clone and select/repeat arbitrary source prompt cache rows."""
+        if not hasattr(base_cache, "to_legacy_cache"):
+            raise QwenFacadeError("unsupported Transformers cache type")
+        cache = DynamicCache.from_legacy_cache(base_cache.to_legacy_cache())
+        cache.batch_select_indices(
+            source_indices.to(device=self.device, dtype=torch.long)
+        )
+        return cache
+
     def select_cache_rows(
         self,
         cache: Cache,
@@ -222,8 +391,10 @@ class QwenModelFacade:
         cache: Cache,
         attention_mask: torch.Tensor,
         rope_deltas: torch.Tensor,
-        prompt_groups: TokenGroups,
+        prompt_groups: TokenGroups | tuple[TokenGroups, ...],
         instrumentation: QwenInstrumentation,
+        source_prompt_indices: tuple[int, ...] | None = None,
+        logical_context_lengths: torch.Tensor | None = None,
     ) -> DecodeResult:
         token_ids = selected_token_ids.to(
             device=self.device,
@@ -262,6 +433,7 @@ class QwenModelFacade:
             prompt_groups,
             batch_size,
             attention_mask,
+            source_prompt_indices=source_prompt_indices,
         )
         try:
             output = self.model(
