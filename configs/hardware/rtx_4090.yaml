@@ -1,0 +1,6 @@
+name: rtx_4090
+accelerator: rtx 4090
+memory_gb: 24
+default_rollout_microbatch_size: 2
+benchmark_microbatch_sizes: [1, 2, 4]
+max_rollout_microbatch_size: 4

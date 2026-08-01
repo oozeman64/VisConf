@@ -116,13 +116,37 @@ class ModelSettings(FrozenModel):
     cpu_offload: Literal[False] = False
     quantization: None = None
     trust_remote_code: bool = True
+    processor_use_fast: Literal[True] = True
 
 
 class HardwareSettings(FrozenModel):
     name: str
-    accelerator: Literal["a100", "h100"]
+    accelerator: Literal["a100", "h100", "rtx 4090"]
     memory_gb: int = Field(gt=0)
+    default_rollout_microbatch_size: int = Field(gt=0)
+    benchmark_microbatch_sizes: tuple[int, ...]
     max_rollout_microbatch_size: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_microbatches(self) -> "HardwareSettings":
+        candidates = self.benchmark_microbatch_sizes
+        if (
+            not candidates
+            or tuple(sorted(set(candidates))) != candidates
+            or any(value <= 0 for value in candidates)
+        ):
+            raise ValueError(
+                "benchmark_microbatch_sizes must be positive and increasing"
+            )
+        if self.default_rollout_microbatch_size not in candidates:
+            raise ValueError(
+                "default rollout microbatch must be benchmarked"
+            )
+        if candidates[-1] != self.max_rollout_microbatch_size:
+            raise ValueError(
+                "largest benchmark microbatch must equal the hardware limit"
+            )
+        return self
 
 
 class DatasetSettings(FrozenModel):

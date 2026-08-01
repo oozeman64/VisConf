@@ -1,8 +1,8 @@
 name: mathverse
 adapter: mathverse
 source: ../MathVerse/testmini.parquet
-revision: null
-split: train
+revision: local-mathverse-testmini-vision-intensive
+split: testmini
 filter_id: vision_intensive
 filters:
   problem_version: Vision Intensive

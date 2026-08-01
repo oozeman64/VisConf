@@ -231,6 +231,8 @@ The run manifest contains at least:
   configuration hash.
 - The single dataset identifier, revision, split, filter, and source-file hashes
   where applicable.
+- The selected example count and SHA-256 hash of the immutable
+  `examples.parquet` selection artifact.
 - Prompt-template configuration and hashes.
 - The single sampling strategy definition, including temperature, top-p, top-k,
   and repetition penalty.
@@ -640,4 +642,3 @@ The view should be generated in DuckDB, Polars, or another analysis layer rather
 than persisted as a second authoritative copy. Any exported materialization is
 derived data and must record the source run ID, committed-shard set, and schema
 versions.
-

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,9 +19,14 @@ from visconf.storage.manifest import (
     RunManifestEntry,
     atomic_write_json,
     build_run_manifest,
+    current_git_state,
     read_manifest,
 )
 from visconf.types import RunCell, RunStatus
+from visconf.utils.logging import log_event
+
+
+logger = logging.getLogger(__name__)
 
 
 class PlanningError(ValueError):
@@ -58,26 +63,6 @@ def _run_id(experiment_group_id: str, cell: RunCell) -> str:
         )
     )
     return f"run-{uuid.uuid5(uuid.NAMESPACE_URL, identity).hex[:16]}"
-
-
-def _git_state(repository_root: Path) -> tuple[str | None, bool | None]:
-    commit = subprocess.run(
-        ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if commit.returncode != 0:
-        return None, None
-    status = subprocess.run(
-        ["git", "-C", str(repository_root), "status", "--porcelain"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if status.returncode != 0:
-        return commit.stdout.strip(), None
-    return commit.stdout.strip(), bool(status.stdout.strip())
 
 
 def _resolved_run(
@@ -176,6 +161,14 @@ def plan_experiment_group(
 
     if manifest_path.exists():
         plan = load_experiment_plan(group_dir)
+        commit, dirty = current_git_state(config.repository_root)
+        if (
+            commit != plan.manifest.git_commit
+            or dirty != plan.manifest.git_dirty
+        ):
+            raise PlanningError(
+                "current Git state differs from the existing experiment plan"
+            )
         if plan.manifest.group_config_hash != config.group_config_hash:
             raise PlanningError(
                 "existing experiment group has a different configuration hash"
@@ -212,7 +205,7 @@ def plan_experiment_group(
     runs = _expected_runs(
         config, experiment_group_id=group_id, group_dir=group_dir
     )
-    commit, dirty = _git_state(config.repository_root)
+    commit, dirty = current_git_state(config.repository_root)
     manifest = ExperimentManifest(
         experiment_group_id=group_id,
         created_at_utc=created_at,
@@ -245,7 +238,15 @@ def plan_experiment_group(
             ),
         )
     atomic_write_json(manifest_path, manifest)
-    return ExperimentPlan(group_dir=group_dir, manifest=manifest, runs=runs)
+    plan = ExperimentPlan(group_dir=group_dir, manifest=manifest, runs=runs)
+    log_event(
+        logger,
+        "group_planned",
+        experiment_group_id=group_id,
+        group_dir=group_dir,
+        run_count=len(runs),
+    )
+    return plan
 
 
 def load_experiment_plan(group_dir: str | Path) -> ExperimentPlan:
@@ -270,6 +271,7 @@ def load_experiment_plan(group_dir: str | Path) -> ExperimentPlan:
             or run.dataset.split != entry.split
             or run.dataset.filter_id != entry.filter_id
             or run.sampling.name != entry.strategy
+            or run_manifest.status is not entry.status
         ):
             raise PlanningError(f"run manifest does not match entry {entry.run_id}")
         runs.append(run)
@@ -293,4 +295,3 @@ def load_resolved_run(
         if run.run_id == run_id:
             return run
     raise PlanningError(f"unknown run_id {run_id!r}")
-

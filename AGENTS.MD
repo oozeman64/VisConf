@@ -9,6 +9,10 @@ The initial experiment scope is:
 
 - Model: Qwen 2.5 VL 3B.
 - Datasets: MathVerse, MathVista, and MMMU-Pro.
+  - MathVerse defaults to the Vision Intensive subset of `testmini`.
+  - MathVista defaults to every row in `testmini`.
+  - MMMU-Pro defaults to every row in the standard four-option test source.
+  - Dataset source, split, and filters remain configurable in YAML.
 - Sampling strategies:
   - `diverse`: temperature `1.0`, top-p `0.99`, and no top-k filtering.
   - `concentrated`: temperature `0.7`, top-p `0.8`, and top-k `20`.
@@ -74,6 +78,7 @@ VisConf/
 |-- AGENTS.MD
 |-- configs/
 |   |-- experiment_group.yaml
+|   |-- experiment_group_4090.yaml
 |   |-- model/
 |   |   `-- qwen2_5_vl_3b.yaml
 |   |-- datasets/
@@ -85,17 +90,26 @@ VisConf/
 |   |   `-- concentrated.yaml
 |   `-- hardware/
 |       |-- a100.yaml
+|       |-- a100_40gb.yaml
+|       |-- a100_80gb.yaml
+|       |-- rtx_4090.yaml
 |       `-- h100.yaml
 |-- docs/
 |   |-- ATTENTION_METRICS.MD
+|   |-- LEGACY_COMPARISON.md
+|   |-- PRODUCTION_RUNBOOK.md
 |   |-- PROBABILITY_CONFIDENCE_METRICS.md
 |   |-- VISUAL_HIDDEN_STATE_METRICS.MD
 |   |-- REPO_SCHEMA.MD
 |   `-- OUTPUT_SCHEMA.md
+|-- environment/
+|   `-- runpod-qwen3vl-metrics.lock
 |-- src/visconf/
+|   |-- benchmark.py
 |   |-- cli.py
 |   |-- config.py
 |   |-- planning.py
+|   |-- production.py
 |   |-- runner.py
 |   |-- types.py
 |   |-- generation/
@@ -120,37 +134,42 @@ VisConf/
 |   |   `-- mmmu_pro.py
 |   |-- scoring/
 |   |   |-- engine.py
-|   |   `-- answer_normalization.py
+|   |   |-- answer_normalization.py
+|   |   `-- identity.py
 |   |-- storage/
 |   |   |-- schema.py
 |   |   |-- parquet_writer.py
 |   |   |-- transaction.py
 |   |   |-- manifest.py
-|   |   `-- resume.py
+|   |   |-- resume.py
+|   |   `-- persistence.py
 |   `-- utils/
 |       |-- seeds.py
-|       |-- device.py
 |       `-- logging.py
 |-- tests/
-|   |-- metrics/
-|   |   |-- test_probability.py
-|   |   |-- test_attention.py
-|   |   `-- test_hidden_state.py
-|   |-- test_run_planning.py
-|   |-- test_output_schema.py
-|   |-- test_predictor_alignment.py
-|   |-- test_token_positions.py
-|   |-- test_sampling.py
-|   |-- test_resume.py
-|   `-- test_qwen_smoke.py
+|   |-- test_phase1.py
+|   |-- test_phase2.py
+|   |-- test_phase3.py
+|   |-- test_phase4.py
+|   |-- test_phase5.py
+|   |-- test_phase6.py
+|   |-- test_phase7.py
+|   |-- test_phase8.py
+|   |-- test_phase9.py
+|   |-- test_phase10.py
+|   `-- test_phase11.py
 `-- scripts/
+    |-- benchmark_hardware.sh
     |-- run_experiment_group.sh
+    |-- run_real_generation_smoke.py
+    |-- run_resume_rehearsal.sh
     |-- run_single_run.sh
-    `-- run_smoke_test.sh
+    |-- run_smoke_test.sh
+    `-- verify_persistent_storage.sh
 ~~~
 
-Create only the files needed by the current implementation phase. The tree is a
-target organization, not a requirement to add empty placeholder modules.
+The tree records the implemented production-ready organization. Add new modules
+only when they preserve the dependency rules below.
 
 ## Module responsibilities
 
@@ -165,8 +184,13 @@ target organization, not a requirement to add empty placeholder modules.
   must not switch datasets or strategies within a run.
 - `config.py` owns typed and validated group configuration and resolved run
   configuration. Avoid scattered accesses to raw dictionaries.
-- `cli.py` plans an experiment group or invokes one resolved run; it should
-  contain no experiment logic.
+- `benchmark.py` measures target-GPU microbatch candidates without changing
+  rollout identities or sampling semantics.
+- `production.py` validates frozen revisions, schemas, checkpoints,
+  benchmark evidence, environment identity, and persistent-storage evidence.
+- `storage/persistence.py` owns persistent-output marker verification.
+- `utils/logging.py` emits structured phase-boundary events.
+- `cli.py` delegates operations and contains no experiment logic.
 
 ### Generation
 

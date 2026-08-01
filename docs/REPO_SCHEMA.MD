@@ -23,6 +23,15 @@ datasets   = [mathverse, mathvista, mmmu_pro]
 strategies = [diverse, concentrated]
 ~~~
 
+Default dataset selections are:
+
+| Dataset | Source selection | Filters |
+| --- | --- | --- |
+| MathVerse | `testmini` | `problem_version: Vision Intensive` |
+| MathVista | `testmini` | all rows |
+| MMMU-Pro | standard four-option test source | all rows |
+
+
 This produces six independent runs. Each `run_id` fixes exactly one dataset,
 one resolved split/filter selection, and one sampling strategy.
 
@@ -126,6 +135,7 @@ VisConf/
 |-- AGENTS.MD
 |-- configs/
 |   |-- experiment_group.yaml
+|   |-- experiment_group_4090.yaml
 |   |-- model/
 |   |   `-- qwen2_5_vl_3b.yaml
 |   |-- datasets/
@@ -137,18 +147,27 @@ VisConf/
 |   |   `-- concentrated.yaml
 |   `-- hardware/
 |       |-- a100.yaml
+|       |-- a100_40gb.yaml
+|       |-- a100_80gb.yaml
+|       |-- rtx_4090.yaml
 |       `-- h100.yaml
 |-- docs/
 |   |-- ATTENTION_METRICS.MD
+|   |-- LEGACY_COMPARISON.md
+|   |-- PRODUCTION_RUNBOOK.md
 |   |-- PROBABILITY_CONFIDENCE_METRICS.md
 |   |-- VISUAL_HIDDEN_STATE_METRICS.MD
 |   |-- OUTPUT_SCHEMA.md
 |   `-- REPO_SCHEMA.MD
+|-- environment/
+|   `-- runpod-qwen3vl-metrics.lock
 |-- src/visconf/
 |   |-- __init__.py
+|   |-- benchmark.py
 |   |-- cli.py
 |   |-- config.py
 |   |-- planning.py
+|   |-- production.py
 |   |-- runner.py
 |   |-- types.py
 |   |-- generation/
@@ -178,37 +197,40 @@ VisConf/
 |   |-- scoring/
 |   |   |-- __init__.py
 |   |   |-- engine.py
-|   |   `-- answer_normalization.py
+|   |   |-- answer_normalization.py
+|   |   `-- identity.py
 |   |-- storage/
 |   |   |-- __init__.py
 |   |   |-- schema.py
 |   |   |-- parquet_writer.py
 |   |   |-- transaction.py
 |   |   |-- manifest.py
-|   |   `-- resume.py
+|   |   |-- resume.py
+|   |   `-- persistence.py
 |   `-- utils/
 |       |-- __init__.py
 |       |-- seeds.py
-|       |-- device.py
 |       `-- logging.py
 |-- tests/
-|   |-- metrics/
-|   |   |-- test_probability.py
-|   |   |-- test_attention.py
-|   |   `-- test_hidden_state.py
-|   |-- datasets/
-|   |-- storage/
-|   |-- test_run_planning.py
-|   |-- test_output_schema.py
-|   |-- test_predictor_alignment.py
-|   |-- test_token_positions.py
-|   |-- test_sampling.py
-|   |-- test_resume.py
-|   `-- test_qwen_smoke.py
+|   |-- test_phase1.py
+|   |-- test_phase2.py
+|   |-- test_phase3.py
+|   |-- test_phase4.py
+|   |-- test_phase5.py
+|   |-- test_phase6.py
+|   |-- test_phase7.py
+|   |-- test_phase8.py
+|   |-- test_phase9.py
+|   |-- test_phase10.py
+|   `-- test_phase11.py
 `-- scripts/
+    |-- benchmark_hardware.sh
     |-- run_experiment_group.sh
+    |-- run_real_generation_smoke.py
+    |-- run_resume_rehearsal.sh
     |-- run_single_run.sh
-    `-- run_smoke_test.sh
+    |-- run_smoke_test.sh
+    `-- verify_persistent_storage.sh
 ~~~
 
 ## Configuration model
@@ -513,8 +535,8 @@ Adapters must not:
 - Compute confidence metrics.
 - Write output files.
 
-The first implementation uses MathVerse. MathVista and MMMU-Pro are added only
-after the generation and storage contracts pass the real-model smoke test.
+The repository implements MathVerse, MathVista, and MMMU-Pro through this shared
+adapter contract. Their configured selections remain independently validated.
 
 ## Model facade contract
 
@@ -835,18 +857,18 @@ Execution order:
 2. Initialize the run output directory and manifest.
 3. Load or create the resume index from committed checkpoints.
 4. Instantiate exactly one dataset adapter.
-5. Materialize or stream selected examples in stable adapter order.
-6. Atomically write `examples.parquet` with the resolved example set.
-7. Load the model facade once.
-8. Enter the instrumentation context.
-9. Process one example at a time.
-10. Derive the 32 rollout identities and remove committed ones.
-11. Generate pending rollout microbatches.
-12. Commit completed rollout bundles in core shards.
-13. Optionally invoke online scoring after the core shard is committed.
-14. Restore instrumentation and release model resources.
-15. Atomically finalize the run manifest.
-16. Update the parent experiment manifest.
+5. Load the model facade once.
+6. Materialize examples in stable adapter order and atomically write
+   `examples.parquet` before the first core shard.
+7. Enter the instrumentation context.
+8. Process one example at a time.
+9. Derive the 32 rollout identities and remove committed ones.
+10. Generate pending rollout microbatches.
+11. Commit completed rollout bundles in core shards.
+12. Optionally invoke online scoring after the core shard is committed.
+13. Restore instrumentation and release model resources.
+14. Atomically finalize the run manifest.
+15. Update the parent experiment manifest.
 
 The runner never changes dataset adapter or sampling strategy. A group launcher
 invokes the runner separately for each cell.
@@ -994,7 +1016,8 @@ Scorer identity contains:
 - Stable scorer name.
 - Semantic scorer version.
 - Configuration hash.
-- Code hash in the run manifest.
+- Code hash in the run manifest covering answer normalization and all three
+  adapter scoring implementations.
 
 Changing extraction or comparison logic requires a new scorer version and creates
 new rows; it never overwrites old scores.
@@ -1008,7 +1031,9 @@ visconf plan  --config configs/experiment_group.yaml
 visconf run   --group <experiment_group_id> --run <run_id>
 visconf group --group <experiment_group_id>
 visconf score --group <experiment_group_id> [--run <run_id>]
-visconf validate --group <experiment_group_id> [--run <run_id>]
+visconf validate --group <experiment_group_id>
+visconf benchmark --group <experiment_group_id> --run <run_id>
+visconf verify-storage --output-root <persistent_output_root> [--initialize]
 ~~~
 
 - `plan` resolves and writes the six-run plan without loading model weights.
@@ -1017,7 +1042,10 @@ visconf validate --group <experiment_group_id> [--run <run_id>]
   call `run` separately.
 - `score` performs versioned offline scoring.
 - `validate` verifies manifests, checkpoints, schemas, hashes, and relational
-  invariants.
+  invariants; `--production` additionally requires a benchmark report.
+- `benchmark` measures configured microbatch candidates only on matching
+  target hardware.
+- `verify-storage` initializes or verifies the persistent-output marker.
 
 Commands return nonzero on configuration, validation, or unhandled execution
 failure. Logging is structured and always includes group ID, run ID, dataset,
@@ -1517,8 +1545,8 @@ Exit criteria:
 
 ### Phase 10: MathVista and MMMU-Pro
 
-Implement the two remaining adapters, prompt configurations, metadata mappings,
-and versioned scorers.
+Validate the MathVista and MMMU-Pro adapters, prompt configurations, metadata
+mappings, and versioned scorers against the shared contracts.
 
 Exit criteria:
 
@@ -1599,3 +1627,4 @@ Dataset source IDs, exact production splits/filters, prompt wording,
 that must be frozen and recorded before production. They do not require a
 repository architecture change.
 
+All source paths, split labels, and filters remain configurable in dataset YAML.

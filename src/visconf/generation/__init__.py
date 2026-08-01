@@ -1,5 +1,7 @@
-"""Pure decoding primitives."""
+"""Deterministic decoding and rollout generation."""
 
+from visconf.generation.engine import GenerationEngine, GenerationError
+from visconf.generation.rollout_state import RolloutState
 from visconf.generation.sampling import (
     SamplingError,
     apply_sampling_transforms,
@@ -13,6 +15,9 @@ from visconf.generation.stopping import (
 )
 
 __all__ = [
+    "GenerationEngine",
+    "GenerationError",
+    "RolloutState",
     "SamplingError",
     "StopDecision",
     "StopReason",

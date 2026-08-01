@@ -1,4 +1,6 @@
 name: h100
 accelerator: h100
 memory_gb: 80
+default_rollout_microbatch_size: 16
+benchmark_microbatch_sizes: [16, 32]
 max_rollout_microbatch_size: 32

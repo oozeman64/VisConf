@@ -71,6 +71,20 @@ def _validate_core(
     for bundle in rollouts:
         generation = bundle.generation
         _assert_run_key(generation.key, run)
+        if generation.key.rollout_index >= run.generation.rollouts_per_example:
+            raise TransactionError("rollout index exceeds the resolved run")
+        if not 0 <= generation.rollout_seed <= 2**64 - 1:
+            raise TransactionError("rollout seed is outside uint64")
+        if generation.prompt_token_count <= 0:
+            raise TransactionError("generation prompt token count must be positive")
+        if (
+            generation.temperature != run.sampling.temperature
+            or generation.top_p != run.sampling.top_p
+            or generation.top_k != run.sampling.top_k
+            or generation.repetition_penalty
+            != run.sampling.repetition_penalty
+        ):
+            raise TransactionError("generation sampling fields differ from the run")
         if generation.stop_reason == "max_new_tokens":
             valid_stop = (
                 generation.terminating_token_id is None
@@ -85,7 +99,39 @@ def _validate_core(
             valid_stop = False
         if not valid_stop:
             raise TransactionError("generation stop fields are inconsistent")
-        token_keys.extend(record.key for record in bundle.tokens)
+        for token, probability, attention, hidden in zip(
+            bundle.tokens,
+            bundle.probability,
+            bundle.attention,
+            bundle.hidden_state,
+            strict=True,
+        ):
+            for key in (
+                token.key,
+                probability.key,
+                attention.key,
+                hidden.key,
+            ):
+                _assert_run_key(key.rollout, run)
+            expected_context = generation.prompt_token_count + token.key.step - 1
+            if (
+                token.context_length != expected_context
+                or token.predictor_position != expected_context - 1
+            ):
+                raise TransactionError("token predictor context is misaligned")
+            if attention.n_generated_text_tokens != token.key.step - 1:
+                raise TransactionError("attention generated-token count is misaligned")
+            if min(
+                attention.n_image_tokens,
+                attention.n_prompt_text_tokens,
+                attention.n_generated_text_tokens,
+            ) < 0:
+                raise TransactionError("attention token counts cannot be negative")
+            if probability.metrics_valid != (probability.metrics is not None):
+                raise TransactionError("probability validity fields are inconsistent")
+            if probability.metrics_valid == (probability.invalid_reason is not None):
+                raise TransactionError("probability invalid reason is inconsistent")
+            token_keys.append(token.key)
 
     if len(token_keys) != len(set(token_keys)):
         raise TransactionError("token keys must be unique within a shard")
@@ -109,11 +155,28 @@ def _validate_scores(
         raise TransactionError("score keys must be unique within a shard")
 
 
-def _validate_written_parts(parts: Sequence[TemporaryPart]) -> None:
+def _validate_written_parts(
+    parts: Sequence[TemporaryPart],
+    expected_counts: dict[str, int],
+    shard_id: str,
+) -> None:
     for part in parts:
         actual = pq.read_schema(part.temporary_path)
         if not actual.equals(SCHEMAS[part.table_name]):
             raise TransactionError(f"schema mismatch for {part.table_name}")
+        if part.row_count != expected_counts[part.table_name]:
+            raise TransactionError(f"row-count mismatch for {part.table_name}")
+        shard_column = (
+            "score_shard_id" if part.table_name == "scores" else "shard_id"
+        )
+        values = pq.read_table(
+            part.temporary_path,
+            columns=[shard_column],
+        ).column(0).to_pylist()
+        if any(value != shard_id for value in values):
+            raise TransactionError(
+                f"shard identity mismatch for {part.table_name}"
+            )
 
 
 def _call(injector: FailureInjector | None, stage: str) -> None:
@@ -186,7 +249,11 @@ class CoreShardTransaction:
                 parts.append(part)
                 _call(failure_injector, f"written:{table_name}")
 
-            _validate_written_parts(parts)
+            _validate_written_parts(
+                parts,
+                {name: len(values) for name, values in records.items()},
+                shard_id,
+            )
             _call(failure_injector, "validated")
 
             for part in parts:
@@ -273,7 +340,11 @@ class ScoreShardTransaction:
         )
         try:
             _call(failure_injector, "written:scores")
-            _validate_written_parts((part,))
+            _validate_written_parts(
+                (part,),
+                {"scores": len(records)},
+                shard_id,
+            )
             _call(failure_injector, "validated")
             publish_part(part)
             _call(failure_injector, "published:scores")

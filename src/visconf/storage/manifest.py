@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import subprocess
 import tempfile
 from contextlib import AbstractContextManager
 from dataclasses import asdict
@@ -20,6 +21,8 @@ import torch
 from pydantic import Field
 
 from visconf.config import FrozenModel, ResolvedRunConfig
+from visconf.datasets.base import prompt_template_hash
+from visconf.scoring.identity import scorer_identity
 from visconf.storage.schema import schema_inventory
 from visconf.types import FailureRecord, RunStatus
 
@@ -85,6 +88,7 @@ class RunManifest(FrozenModel):
     decoder_layer_count: int = 36
     layer_ranges: dict[str, tuple[int, int]]
     metric_column_inventory: dict[str, tuple[dict[str, Any], ...]]
+    dataset_source_hashes: dict[str, str] = Field(default_factory=dict)
     stop_token_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     prompt_template_hashes: dict[str, str]
     scorer_versions: tuple[dict[str, str], ...]
@@ -92,6 +96,8 @@ class RunManifest(FrozenModel):
     environment: dict[str, Any]
     git_commit: str | None
     git_dirty: bool | None
+    example_count: int | None = None
+    example_selection_sha256: str | None = None
     committed_core_shards: tuple[ShardInventory, ...] = ()
     committed_score_shards: tuple[ShardInventory, ...] = ()
 
@@ -160,8 +166,11 @@ def _version(package: str) -> str | None:
         return None
 
 
-def capture_environment() -> dict[str, Any]:
+def capture_environment(device: str | torch.device | None = None) -> dict[str, Any]:
     cuda_available = torch.cuda.is_available()
+    cuda_device = torch.device(device) if device is not None else None
+    if cuda_available and cuda_device is None:
+        cuda_device = torch.device("cuda", torch.cuda.current_device())
     return {
         "python": platform.python_version(),
         "pytorch": torch.__version__,
@@ -171,13 +180,57 @@ def capture_environment() -> dict[str, Any]:
         "qwen_vl_utils": _version("qwen-vl-utils"),
         "cuda_runtime": torch.version.cuda,
         "cuda_available": cuda_available,
-        "gpu_model": torch.cuda.get_device_name(0) if cuda_available else None,
+        "gpu_model": (
+            torch.cuda.get_device_name(cuda_device) if cuda_available else None
+        ),
         "gpu_memory_bytes": (
-            torch.cuda.get_device_properties(0).total_memory
+            torch.cuda.get_device_properties(cuda_device).total_memory
             if cuda_available
             else None
         ),
     }
+
+
+def current_git_state(repository_root: Path) -> tuple[str | None, bool | None]:
+    commit = subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if commit.returncode != 0:
+        return None, None
+    status = subprocess.run(
+        ["git", "-C", str(repository_root), "status", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (
+        commit.stdout.strip(),
+        bool(status.stdout.strip()) if status.returncode == 0 else None,
+    )
+
+
+def dataset_source_hashes(source: Path) -> dict[str, str]:
+    """Hash configured local source files when they are available."""
+
+    if source.is_file():
+        paths = (source,)
+        base = source.parent
+    elif source.is_dir():
+        paths = tuple(sorted(path for path in source.rglob("*") if path.is_file()))
+        base = source
+    else:
+        return {}
+    hashes: dict[str, str] = {}
+    for path in paths:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        hashes[path.relative_to(base).as_posix()] = digest.hexdigest()
+    return hashes
 
 
 def build_run_manifest(
@@ -187,9 +240,7 @@ def build_run_manifest(
     git_commit: str | None,
     git_dirty: bool | None,
 ) -> RunManifest:
-    prompt_hash = hashlib.sha256(
-        run.dataset.prompt_template.encode("utf-8")
-    ).hexdigest()
+    prompt_hash = prompt_template_hash(run.dataset.prompt_template)
     return RunManifest(
         experiment_group_id=run.experiment_group_id,
         run_id=run.run_id,
@@ -208,19 +259,77 @@ def build_run_manifest(
             "last_layer": (36, 36),
         },
         metric_column_inventory=schema_inventory(),
+        dataset_source_hashes=dataset_source_hashes(run.dataset.source),
         prompt_template_hashes={"dataset_prompt_template": prompt_hash},
-        scorer_versions=(
-            {
-                "name": run.scoring.scorer_name,
-                "version": run.scoring.scorer_version,
-                "mode": run.scoring.mode.value,
-            },
-        ),
+        scorer_versions=(scorer_identity(run.scoring),),
         parquet_settings=run.storage.model_dump(mode="json"),
-        environment=capture_environment(),
+        environment={},
         git_commit=git_commit,
         git_dirty=git_dirty,
     )
+
+
+def record_runtime_identity(
+    manifest_path: Path,
+    *,
+    device: str | torch.device,
+    stop_token_ids: dict[str, tuple[str, ...]],
+    repository_root: Path,
+) -> RunManifest:
+    manifest = read_manifest(manifest_path, RunManifest)
+    commit, dirty = current_git_state(repository_root)
+    if commit != manifest.git_commit or dirty != manifest.git_dirty:
+        raise ManifestError("current Git state differs from the planned run")
+    source_hashes = dataset_source_hashes(
+        manifest.resolved_config.dataset.source
+    )
+    if (
+        manifest.dataset_source_hashes
+        and manifest.dataset_source_hashes != source_hashes
+    ):
+        raise ManifestError("dataset sources changed after planning")
+    expected_prompt_hashes = {
+        "dataset_prompt_template": prompt_template_hash(
+            manifest.resolved_config.dataset.prompt_template
+        )
+    }
+    if manifest.prompt_template_hashes != expected_prompt_hashes:
+        raise ManifestError("prompt template changed after planning")
+    updated = manifest.model_copy(
+        update={
+            "environment": capture_environment(device),
+            "stop_token_ids": stop_token_ids,
+            "dataset_source_hashes": source_hashes,
+            "updated_at_utc": utc_now(),
+        }
+    )
+    atomic_write_json(manifest_path, updated)
+    return updated
+
+
+def record_example_selection(
+    manifest_path: Path,
+    *,
+    example_count: int,
+    selection_sha256: str,
+) -> RunManifest:
+    manifest = read_manifest(manifest_path, RunManifest)
+    if example_count < 0 or len(selection_sha256) != 64:
+        raise ManifestError("example selection identity is invalid")
+    if manifest.example_count is not None and (
+        manifest.example_count != example_count
+        or manifest.example_selection_sha256 != selection_sha256
+    ):
+        raise ManifestError("examples.parquet differs from the recorded selection")
+    updated = manifest.model_copy(
+        update={
+            "example_count": example_count,
+            "example_selection_sha256": selection_sha256,
+            "updated_at_utc": utc_now(),
+        }
+    )
+    atomic_write_json(manifest_path, updated)
+    return updated
 
 
 _ALLOWED_TRANSITIONS = {
@@ -261,6 +370,18 @@ def update_experiment_run_status(
     runs = []
     for entry in manifest.runs:
         if entry.run_id == run_id:
+            if status != entry.status and (entry.status, status) not in _ALLOWED_TRANSITIONS:
+                raise ManifestError(
+                    f"invalid parent run status transition {entry.status} -> {status}"
+                )
+            child = read_manifest(
+                path.parent / entry.relative_path / "manifest.json",
+                RunManifest,
+            )
+            if child.status is not status:
+                raise ManifestError(
+                    "parent run status must match the child manifest"
+                )
             entry = entry.model_copy(update={"status": status})
             found = True
         runs.append(entry)
@@ -307,6 +428,34 @@ def record_shard_inventory(
     updated = manifest.model_copy(
         update={
             field: current + (inventory,),
+            "updated_at_utc": utc_now(),
+        }
+    )
+    atomic_write_json(manifest_path, updated)
+    return updated
+
+
+def record_scorer_identity(
+    manifest_path: Path,
+    identity: dict[str, str],
+) -> RunManifest:
+    manifest = read_manifest(manifest_path, RunManifest)
+    for current in manifest.scorer_versions:
+        if (
+            current["name"] == identity["name"]
+            and current["version"] == identity["version"]
+        ):
+            if (
+                current["config_hash"] != identity["config_hash"]
+                or current["code_hash"] != identity["code_hash"]
+            ):
+                raise ManifestError(
+                    "scorer version conflicts with recorded hashes"
+                )
+            return manifest
+    updated = manifest.model_copy(
+        update={
+            "scorer_versions": manifest.scorer_versions + (identity,),
             "updated_at_utc": utc_now(),
         }
     )

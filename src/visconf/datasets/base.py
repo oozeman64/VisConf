@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, runtime_checkable
@@ -25,6 +26,27 @@ PROMPT_SUFFIXES = {
         "then give your final answer inside \\boxed{}."
     ),
 }
+
+
+def prompt_template_hash(name: str) -> str:
+    """Hash the configured prompt body and the renderer that applies it."""
+
+    try:
+        suffix = PROMPT_SUFFIXES[name]
+    except KeyError as exc:
+        raise PromptError(f"unknown prompt template {name!r}") from exc
+    payload = {
+        "name": name,
+        "suffix": suffix,
+        "renderer": inspect.getsource(render_question),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def render_question(question: str, config: PromptConfig) -> str:
@@ -97,4 +119,3 @@ class DatasetAdapter(Protocol):
         response: str,
         scorer_config: ScoringSettings,
     ) -> Mapping[str, JsonValue] | None: ...
-

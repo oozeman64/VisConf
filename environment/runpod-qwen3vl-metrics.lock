@@ -1,0 +1,20 @@
+# VisConf RunPod environment lock
+# Captured from the validated qwen3vl-metrics environment on 2026-07-31.
+python==3.11.15
+torch==2.5.1+cu124
+transformers==4.57.0
+pyarrow==24.0.0
+pydantic==2.13.4
+Pillow==12.2.0
+PyYAML==6.0.3
+qwen-vl-utils==0.0.8
+cuda-runtime==12.4
+
+# Runtime contract
+cuda-device-count==1
+model-dtype==bfloat16
+attention-implementation==eager
+cpu-offload==false
+quantization==none
+torch-compile==false
+conda-environment==qwen3vl-metrics

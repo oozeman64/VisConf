@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -15,15 +14,16 @@ from PIL import Image
 
 from visconf.config import DatasetSettings, ScoringSettings
 from visconf.datasets.base import DatasetError, render_question
+from visconf.scoring.answer_normalization import (
+    parse_mcq_choices,
+    score_generation,
+)
 from visconf.types import (
     Example,
     ExampleImage,
     JsonValue,
     PromptConfig,
 )
-
-
-_MULTIPLE_CHOICE_MARKER = re.compile(r"(?:\([A-Z]\)|\b[A-Z][.)])")
 
 
 def _to_rgb(image: Image.Image) -> Image.Image:
@@ -92,11 +92,8 @@ def _answer_type(row: Mapping[str, object]) -> str:
         return "multiple_choice"
     answer = str(row.get("answer") or "").strip().upper()
     question = str(row.get("question") or "")
-    if (
-        len(answer) == 1
-        and "A" <= answer <= "Z"
-        and _MULTIPLE_CHOICE_MARKER.search(question)
-    ):
+    choices = parse_mcq_choices(question)
+    if len(answer) == 1 and answer in choices:
         return "multiple_choice"
     return "freeform"
 
@@ -214,5 +211,12 @@ class MathVerseAdapter:
         response: str,
         scorer_config: ScoringSettings,
     ) -> Mapping[str, JsonValue] | None:
-        return None
-
+        return score_generation(
+            response,
+            str(
+                example.ground_truth.get("question_for_eval")
+                or example.question
+            ),
+            str(example.ground_truth.get("answer") or ""),
+            example.answer_type or "freeform",
+        )

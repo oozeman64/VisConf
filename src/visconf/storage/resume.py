@@ -75,20 +75,25 @@ def _part_paths(
     resolved: dict[str, Path] = {}
     run_dir = run.output_dir.resolve()
     for item in parts:
-        table_name = item["table_name"]
-        path = (run_dir / item["relative_path"]).resolve()
+        if not isinstance(item, dict):
+            raise ResumeError("checkpoint part inventory entry is not an object")
+        table_name = item.get("table_name")
+        relative_path = item.get("relative_path")
+        if table_name not in SCHEMAS or not isinstance(relative_path, str):
+            raise ResumeError("checkpoint part inventory is malformed")
+        path = (run_dir / relative_path).resolve()
         if not path.is_relative_to(run_dir):
             raise ResumeError("checkpoint part escapes its run directory")
         if table_name in resolved:
             raise ResumeError("checkpoint repeats a table part")
         if not path.is_file():
             raise ResumeError(f"checkpoint part is missing: {path}")
-        if path.stat().st_size != item["byte_size"]:
+        if path.stat().st_size != item.get("byte_size"):
             raise ResumeError(f"part byte size differs: {path}")
-        if _sha256(path) != item["sha256"]:
+        if _sha256(path) != item.get("sha256"):
             raise ResumeError(f"part hash differs: {path}")
         metadata = pq.read_metadata(path)
-        if metadata.num_rows != item["row_count"]:
+        if metadata.num_rows != item.get("row_count"):
             raise ResumeError(f"part row count differs: {path}")
         if not pq.read_schema(path).equals(SCHEMAS[table_name]):
             raise ResumeError(f"part schema differs: {path}")
@@ -98,6 +103,40 @@ def _part_paths(
 
 def _tuple_key(row: dict[str, Any]) -> tuple[object, ...]:
     return tuple(row[name] for name in TOKEN_KEY_COLUMNS)
+
+
+def _rollout_key(row: dict[str, Any]) -> tuple[object, ...]:
+    return tuple(row[name] for name in TOKEN_KEY_COLUMNS[:-1])
+
+
+def _score_key(row: dict[str, Any]) -> tuple[object, ...]:
+    return (*_rollout_key(row), row["scorer_name"], row["scorer_version"])
+
+
+def _declared_rollout_key(row: dict[str, Any]) -> tuple[object, ...]:
+    key = _rollout_key(row)
+    if any(not isinstance(value, str) or not value for value in key[:-1]):
+        raise TypeError("rollout identity strings are invalid")
+    rollout_index = key[-1]
+    if (
+        isinstance(rollout_index, bool)
+        or not isinstance(rollout_index, int)
+        or rollout_index < 0
+    ):
+        raise TypeError("rollout index is invalid")
+    return key
+
+
+def _declared_score_key(row: dict[str, Any]) -> tuple[object, ...]:
+    key = _declared_rollout_key(row)
+    scorer_name = row["scorer_name"]
+    scorer_version = row["scorer_version"]
+    if any(
+        not isinstance(value, str) or not value
+        for value in (scorer_name, scorer_version)
+    ):
+        raise TypeError("scorer identity is invalid")
+    return (*key, scorer_name, scorer_version)
 
 
 def _validate_core_relations(
@@ -112,6 +151,13 @@ def _validate_core_relations(
         name: pq.read_table(path).to_pylist()
         for name, path in paths.items()
     }
+    shard_id = checkpoint["shard_id"]
+    for table_name, rows in tables.items():
+        shard_column = "shard_id"
+        if any(row[shard_column] != shard_id for row in rows):
+            raise ResumeError(
+                f"{table_name} contains a row for another shard"
+            )
     token_keys = [_tuple_key(row) for row in tables["tokens"]]
     if len(token_keys) != len(set(token_keys)):
         raise ResumeError("committed token keys are not unique")
@@ -121,14 +167,14 @@ def _validate_core_relations(
 
     generation_by_rollout = {}
     for row in tables["generations"]:
-        rollout = tuple(row[name] for name in TOKEN_KEY_COLUMNS[:-1])
+        rollout = _rollout_key(row)
         if rollout in generation_by_rollout:
             raise ResumeError("committed rollout keys are not unique")
         generation_by_rollout[rollout] = row
 
     tokens_by_rollout: dict[tuple[object, ...], list[dict[str, Any]]] = {}
     for row in tables["tokens"]:
-        rollout = tuple(row[name] for name in TOKEN_KEY_COLUMNS[:-1])
+        rollout = _rollout_key(row)
         tokens_by_rollout.setdefault(rollout, []).append(row)
 
     for rollout, generation in generation_by_rollout.items():
@@ -142,9 +188,62 @@ def _validate_core_relations(
             "generated_token_ids"
         ]:
             raise ResumeError("committed token IDs differ from generation")
+        if generation["num_retained_tokens"] != len(
+            generation["generated_token_ids"]
+        ):
+            raise ResumeError("generation retained-token count is inconsistent")
+        if generation["stop_reason"] == "max_new_tokens":
+            stop_valid = (
+                generation["terminating_token_id"] is None
+                and generation["hit_max_new_tokens"] is True
+            )
+        elif generation["stop_reason"] == "stop_token":
+            stop_valid = (
+                generation["terminating_token_id"] is not None
+                and generation["hit_max_new_tokens"] is False
+            )
+        else:
+            stop_valid = False
+        if not stop_valid:
+            raise ResumeError("generation stop fields are inconsistent")
 
     if set(tokens_by_rollout) - set(generation_by_rollout):
         raise ResumeError("token rows exist without a generation")
+
+    actual_rollouts = list(generation_by_rollout)
+    declared = checkpoint.get("completed_rollouts")
+    if not isinstance(declared, list):
+        raise ResumeError("core checkpoint has no completed rollout inventory")
+    try:
+        declared_rollouts = [_declared_rollout_key(value) for value in declared]
+    except (KeyError, TypeError) as exc:
+        raise ResumeError("completed rollout inventory is malformed") from exc
+    if (
+        len(declared_rollouts) != len(set(declared_rollouts))
+        or set(declared_rollouts) != set(actual_rollouts)
+    ):
+        raise ResumeError(
+            "checkpoint completed rollouts differ from generation rows"
+        )
+
+    steps = [row["step"] for row in tables["tokens"]]
+    token_key_count = checkpoint.get("token_key_count")
+    if (
+        isinstance(token_key_count, bool)
+        or not isinstance(token_key_count, int)
+        or token_key_count != len(token_keys)
+    ):
+        raise ResumeError("checkpoint token-key count differs from tokens")
+    expected_min = min(steps) if steps else None
+    expected_max = max(steps) if steps else None
+    recorded_min = checkpoint.get("min_token_step")
+    recorded_max = checkpoint.get("max_token_step")
+    if any(
+        value is not None
+        and (isinstance(value, bool) or not isinstance(value, int))
+        for value in (recorded_min, recorded_max)
+    ) or recorded_min != expected_min or recorded_max != expected_max:
+        raise ResumeError("checkpoint token-step bounds differ from tokens")
     for rows in tables.values():
         for row in rows:
             if (
@@ -156,11 +255,50 @@ def _validate_core_relations(
                 raise ResumeError("committed row does not match its run")
 
 
+def _validate_score_relations(
+    run: ResolvedRunConfig,
+    checkpoint: dict[str, Any],
+    path: Path,
+) -> None:
+    rows = pq.read_table(path).to_pylist()
+    shard_id = checkpoint["shard_id"]
+    keys = [_score_key(row) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise ResumeError("committed score keys are not unique")
+    if any(row["score_shard_id"] != shard_id for row in rows):
+        raise ResumeError("scores contain a row for another score shard")
+    for row in rows:
+        if (
+            row["run_id"] != run.run_id
+            or row["dataset"] != run.dataset.name
+            or row["split"] != run.dataset.split
+            or row["strategy"] != run.sampling.name
+        ):
+            raise ResumeError("committed score does not match its run")
+    declared = checkpoint.get("completed_scores")
+    if not isinstance(declared, list):
+        raise ResumeError("score checkpoint has no completed score inventory")
+    try:
+        declared_keys = [_declared_score_key(value) for value in declared]
+    except (KeyError, TypeError) as exc:
+        raise ResumeError("completed score inventory is malformed") from exc
+    if len(declared_keys) != len(set(declared_keys)) or set(declared_keys) != set(keys):
+        raise ResumeError("checkpoint completed scores differ from score rows")
+
+
 def validate_checkpoint(
     run: ResolvedRunConfig,
     path: Path,
 ) -> dict[str, Any]:
     checkpoint = _load_json(path)
+    shard_id = checkpoint.get("shard_id")
+    if not isinstance(shard_id, str) or not shard_id:
+        raise ResumeError("checkpoint shard ID is missing")
+    expected_path = path.resolve().relative_to(run.output_dir.resolve()).as_posix()
+    if checkpoint.get("checkpoint_path") != expected_path:
+        raise ResumeError("checkpoint path inventory differs from its location")
+    if not isinstance(checkpoint.get("attempt_id"), str) or not checkpoint["attempt_id"]:
+        raise ResumeError("checkpoint attempt ID is missing")
     if checkpoint.get("run_id") != run.run_id:
         raise ResumeError("checkpoint belongs to another run")
     if checkpoint.get("output_schema_version") != (
@@ -179,14 +317,7 @@ def validate_checkpoint(
     elif checkpoint_type == "score":
         if set(paths) != {"scores"}:
             raise ResumeError("score checkpoint must inventory one score part")
-        for row in pq.read_table(paths["scores"]).to_pylist():
-            if (
-                row["run_id"] != run.run_id
-                or row["dataset"] != run.dataset.name
-                or row["split"] != run.dataset.split
-                or row["strategy"] != run.sampling.name
-            ):
-                raise ResumeError("committed score does not match its run")
+        _validate_score_relations(run, checkpoint, paths["scores"])
     else:
         raise ResumeError("unknown checkpoint type")
     return checkpoint

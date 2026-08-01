@@ -22,6 +22,17 @@ def test_initial_config_matches_the_fixed_experiment() -> None:
         "mathvista",
         "mmmu_pro",
     }
+    selections = {
+        item.name: (item.split, item.filter_id, item.filters)
+        for item in config.datasets
+    }
+    assert selections["mathverse"] == (
+        "testmini",
+        "vision_intensive",
+        {"problem_version": "Vision Intensive"},
+    )
+    assert selections["mathvista"] == ("testmini", "all", {})
+    assert selections["mmmu_pro"] == ("test", "all", {})
     assert {item.name for item in config.strategies} == {
         "diverse",
         "concentrated",

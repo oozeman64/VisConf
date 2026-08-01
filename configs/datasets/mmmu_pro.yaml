@@ -1,8 +1,8 @@
 name: mmmu_pro
 adapter: mmmu_pro
 source: "../MMMU_Pro/standard (4 options)"
-revision: null
-split: train
-filter_id: standard_4_options
+revision: local-mmmu-pro-standard-4-options
+split: test
+filter_id: all
 filters: {}
 prompt_template: reasoning_boxed_v1

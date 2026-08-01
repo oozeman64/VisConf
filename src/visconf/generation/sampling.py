@@ -58,7 +58,7 @@ def apply_sampling_transforms(
             descending=True,
         )
         sorted_probabilities = torch.softmax(sorted_logits, dim=-1)
-        remove_sorted = torch.cumsum(sorted_probabilities, dim=-1) > config.top_p
+        remove_sorted = torch.cumsum(sorted_probabilities, dim=-1) >= config.top_p
         remove_sorted[1:] = remove_sorted[:-1].clone()
         remove_sorted[0] = False
         remove = torch.zeros_like(remove_sorted)

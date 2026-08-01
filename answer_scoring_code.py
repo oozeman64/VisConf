@@ -1,4 +1,6 @@
+import re
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from typing import Any
 
 
 def extract_boxed_answer(text: str) -> str | None:
