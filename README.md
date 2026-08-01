@@ -48,6 +48,21 @@ visconf plan --config configs/experiment_group_4090.yaml
 python scripts/run_real_generation_smoke.py
 ~~~
 
+To plan the complete six-run matrix on the RTX 4090 with all 32 rollouts in
+one microbatch and a 1,024-token generation limit, use the dedicated full-run
+profile:
+
+~~~bash
+visconf plan \
+  --config configs/experiment_group_4090_full_mb32.yaml \
+  --group-id <experiment_group_id>
+visconf group --group <experiment_group_id>
+~~~
+
+This profile resolves its output root to `VisConf/outputs/`, uses microbatch 32,
+and creates one independently resumable run for each of the six
+dataset-by-strategy cells.
+
 Capture a runner-backed RTX 4090 efficiency baseline over one real prompt,
 with 16 rollouts, microbatch 8, and a 1,024-token generation limit:
 
@@ -61,10 +76,32 @@ runner and commits a complete output directory: examples, generations, tokens,
 all metric-family Parquet files, a checkpoint, and updated manifests. Additional
 script arguments override the defaults.
 
+To exercise the validated 32-rollout RTX 4090 shape through the same complete
+output transaction, run:
+
+~~~bash
+scripts/run_efficiency_benchmark.sh \
+  outputs/benchmarks/rtx4090-mb32 \
+  --config configs/experiment_group_4090_full_mb32.yaml \
+  --group-id benchmark-rtx4090-mb32 \
+  --rollouts 32 \
+  --microbatch 32 \
+  --max-new-tokens 1024
+~~~
+
 Each dataset-by-strategy cell has its own immutable `run_id`, output directory,
 checkpoint inventory, and resume state. Core shards commit generation, token,
 probability, attention, and hidden-state tables atomically. Scores are versioned
 and committed independently.
+
+During decoding, VisConf validates each raw-logit microbatch once and shares its
+descending vocabulary ordering between selection and probability metrics.
+Sampling still applies temperature, top-k, then top-p to a copy, constructs
+dense probabilities in original vocabulary order, and uses one independent
+generator per rollout. Attention and hidden observations are accumulated across
+the microbatch on-device; final attention metric formulas are CPU-batched after
+one transfer. These implementation optimizations do not change metric formulas,
+Parquet schemas, or rollout identities.
 
 Operational commands are:
 

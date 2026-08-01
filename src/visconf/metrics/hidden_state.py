@@ -68,12 +68,34 @@ def compute_layer_cosines(
 ) -> tuple[float | None, ...]:
     """Return normalized layer cosines for a predictor microbatch."""
 
+    values = compute_layer_cosines_tensor(
+        predictor_hidden,
+        image_prototype,
+    ).cpu().tolist()
+    return tuple(
+        float(value) if math.isfinite(value) else None
+        for value in values
+    )
+
+
+@torch.inference_mode()
+def compute_layer_cosines_tensor(
+    predictor_hidden: torch.Tensor,
+    image_prototype: torch.Tensor | None,
+) -> torch.Tensor:
+    """Return device-resident normalized cosines, using NaN when undefined."""
+
     if not isinstance(predictor_hidden, torch.Tensor):
         raise MetricInputError("hidden states must be torch.Tensor values")
     if predictor_hidden.ndim != 2:
         raise MetricInputError("predictor hidden states must have shape [batch, hidden]")
     if image_prototype is None:
-        return (None,) * predictor_hidden.shape[0]
+        return torch.full(
+            (predictor_hidden.shape[0],),
+            torch.nan,
+            device=predictor_hidden.device,
+            dtype=torch.float32,
+        )
     if not isinstance(image_prototype, torch.Tensor):
         raise MetricInputError("hidden states must be torch.Tensor values")
     if image_prototype.ndim != 1 or predictor_hidden.shape[1:] != image_prototype.shape:
@@ -101,14 +123,10 @@ def compute_layer_cosines(
     )
     cosine = torch.sum(predictor * prototype.unsqueeze(0), dim=-1) / denominator
     normalized = torch.clamp((cosine + 1) / 2, min=0, max=1)
-    values = torch.where(
+    return torch.where(
         valid,
         normalized,
         torch.full_like(normalized, torch.nan),
-    ).cpu().tolist()
-    return tuple(
-        float(value) if math.isfinite(value) else None
-        for value in values
     )
 
 

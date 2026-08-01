@@ -8,8 +8,9 @@ from dataclasses import dataclass
 import torch
 
 from visconf.metrics.validation import (
+    MetricInputError,
     probability_logits,
-    probability_logits_batch,
+    probability_logits_only_batch,
 )
 
 
@@ -49,6 +50,14 @@ PROBABILITY_INTEGER_METRICS = (
     "nucleus_size_0p99",
 )
 PROBABILITY_METRICS = PROBABILITY_FLOAT_METRICS + PROBABILITY_INTEGER_METRICS
+
+
+@dataclass(frozen=True, slots=True)
+class ProbabilityBatchWorkspace:
+    """Validated raw logits and their reusable full-vocabulary ordering."""
+
+    logits: torch.Tensor
+    sorted_indices: torch.Tensor
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,25 +129,75 @@ def _nucleus_sizes(
 
 
 @torch.inference_mode()
-def compute_probability_metrics_batch(
+def prepare_probability_batch(
     raw_logits: torch.Tensor,
-    selected_token_ids: torch.Tensor,
-) -> tuple[ProbabilityMetrics, ...]:
-    """Compute all probability metrics for a logits microbatch."""
+) -> ProbabilityBatchWorkspace:
+    """Validate once and compute the vocabulary ordering once per step."""
 
-    logits, selected = probability_logits_batch(
-        raw_logits,
+    logits = probability_logits_only_batch(raw_logits)
+    sorted_indices = torch.argsort(
+        logits,
+        dim=-1,
+        descending=True,
+    )
+    return ProbabilityBatchWorkspace(
+        logits=logits,
+        sorted_indices=sorted_indices,
+    )
+
+
+def _workspace_rows(
+    workspace: ProbabilityBatchWorkspace,
+    selected_token_ids: torch.Tensor,
+    row_indices: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    selected = selected_token_ids.to(
+        device=workspace.logits.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    if row_indices is None:
+        logits = workspace.logits
+        sorted_indices = workspace.sorted_indices
+    else:
+        rows = row_indices.to(
+            device=workspace.logits.device,
+            dtype=torch.long,
+        ).reshape(-1)
+        if rows.shape[0] != selected.shape[0]:
+            raise MetricInputError("selected token batch differs from rows")
+        if torch.any(rows < 0) or torch.any(rows >= workspace.logits.shape[0]):
+            raise MetricInputError("row_indices are outside the microbatch")
+        logits = workspace.logits.index_select(0, rows)
+        sorted_indices = workspace.sorted_indices.index_select(0, rows)
+
+    if selected.shape[0] != logits.shape[0]:
+        raise MetricInputError("selected token batch differs from logits")
+    if torch.any(selected < 0) or torch.any(selected >= logits.shape[1]):
+        raise MetricInputError("selected_token_ids are outside the vocabulary")
+    return logits, sorted_indices, selected
+
+
+@torch.inference_mode()
+def compute_probability_metrics_from_workspace(
+    workspace: ProbabilityBatchWorkspace,
+    selected_token_ids: torch.Tensor,
+    row_indices: torch.Tensor | None = None,
+) -> tuple[ProbabilityMetrics, ...]:
+    """Compute metrics while reusing a prepared vocabulary ordering."""
+
+    logits, sorted_indices, selected = _workspace_rows(
+        workspace,
         selected_token_ids,
+        row_indices,
     )
     batch_size, vocabulary_size = logits.shape
     log_vocabulary_size = math.log(vocabulary_size)
 
     log_probabilities = torch.log_softmax(logits, dim=-1)
     probabilities = torch.exp(log_probabilities)
-    sorted_log_probabilities, _ = torch.sort(
-        log_probabilities,
-        dim=-1,
-        descending=True,
+    sorted_log_probabilities = log_probabilities.gather(
+        1,
+        sorted_indices,
     )
     sorted_probabilities = torch.exp(sorted_log_probabilities)
     selected_logp = log_probabilities.gather(
@@ -229,6 +288,19 @@ def compute_probability_metrics_batch(
             *integer_values[index],
         )
         for index in range(batch_size)
+    )
+
+
+@torch.inference_mode()
+def compute_probability_metrics_batch(
+    raw_logits: torch.Tensor,
+    selected_token_ids: torch.Tensor,
+) -> tuple[ProbabilityMetrics, ...]:
+    """Compute all probability metrics for a logits microbatch."""
+
+    return compute_probability_metrics_from_workspace(
+        prepare_probability_batch(raw_logits),
+        selected_token_ids,
     )
 
 

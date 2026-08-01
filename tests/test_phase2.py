@@ -7,8 +7,10 @@ import torch
 from visconf.generation.sampling import (
     apply_sampling_transforms,
     apply_sampling_transforms_batch,
+    apply_sampling_transforms_prepared,
     sample_next_token,
     sample_next_tokens,
+    sample_next_tokens_prepared,
 )
 from visconf.generation.stopping import (
     StopReason,
@@ -17,6 +19,7 @@ from visconf.generation.stopping import (
 )
 from visconf.metrics.accumulator import (
     AttentionAccumulator,
+    BatchedAttentionAccumulator,
     HiddenStateAccumulator,
 )
 from visconf.metrics.attention import (
@@ -32,12 +35,15 @@ from visconf.metrics.hidden_state import (
     aggregate_hidden_metrics,
     compute_layer_cosine,
     compute_layer_cosines,
+    compute_layer_cosines_tensor,
 )
 from visconf.metrics.probability import (
     PROBABILITY_METRICS,
     ProbabilityMetrics,
     compute_probability_metrics,
     compute_probability_metrics_batch,
+    compute_probability_metrics_from_workspace,
+    prepare_probability_batch,
 )
 from visconf.types import SamplingConfig
 from visconf.utils.seeds import (
@@ -94,10 +100,21 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
         generated_text_positions=(3,),
     )
     metrics = compute_attention_metrics(vector, groups)
-    assert compute_attention_metrics_batch(
+    batched_metrics = compute_attention_metrics_batch(
         torch.stack((vector, vector)),
         (groups, groups),
-    ) == (metrics, metrics)
+    )
+    for batched in batched_metrics:
+        assert batched.valid == metrics.valid
+        for field in fields(AttentionScenarioMetrics):
+            if field.name == "valid":
+                continue
+            expected = getattr(metrics, field.name)
+            actual = getattr(batched, field.name)
+            if expected is None:
+                assert actual is None
+            else:
+                assert actual == pytest.approx(expected, abs=1e-6)
 
     assert len(ATTENTION_METRICS) == 41
     assert len(ATTENTION_SCENARIOS) * len(ATTENTION_METRICS) == 123
@@ -120,6 +137,32 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
         for field in fields(AttentionScenarioMetrics)
         if field.name != "valid"
     )
+    batched_invalid = compute_attention_metrics_batch(
+        torch.stack((vector, invalid_vector)),
+        (groups, groups),
+    )
+    assert batched_invalid[0].valid
+    assert batched_invalid[1] == invalid
+    empty_generated_groups = StepTokenGroups(
+        image_positions=(0, 4),
+        prompt_text_positions=(1, 2, 3),
+        generated_text_positions=(),
+    )
+    empty_generated = compute_attention_metrics(
+        vector,
+        empty_generated_groups,
+    )
+    batched_empty_generated = compute_attention_metrics_batch(
+        vector.unsqueeze(0),
+        (empty_generated_groups,),
+    )[0]
+    assert batched_empty_generated.valid
+    assert batched_empty_generated.generated_text_attn_total == 0.0
+    assert batched_empty_generated.generated_text_attn_avg is None
+    assert batched_empty_generated.all_attn_total == pytest.approx(
+        empty_generated.all_attn_total,
+        abs=1e-6,
+    )
 
     attention_accumulator = AttentionAccumulator()
     for layer_number in range(1, 37):
@@ -132,6 +175,25 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
         for aggregate in aggregates.values()
     )
 
+    batched_accumulator = BatchedAttentionAccumulator(batch_size=2)
+    for layer_number in range(1, 37):
+        rows = torch.stack((vector, vector)).unsqueeze(1)
+        if layer_number == 5:
+            rows[1, 0, 0] = torch.nan
+        batched_accumulator.add_layer(layer_number, rows)
+    batched_aggregates = batched_accumulator.finalize()
+    assert all(
+        batched_aggregates[0][scenario].valid
+        and torch.allclose(
+            batched_aggregates[0][scenario].vector,
+            aggregates[scenario].vector,
+        )
+        for scenario in ATTENTION_SCENARIOS
+    )
+    assert not batched_aggregates[1]["all_layers_all_heads"].valid
+    assert not batched_aggregates[1]["early_visual_integration"].valid
+    assert batched_aggregates[1]["visual_reasoning"].valid
+
     assert len(HIDDEN_STATE_METRICS) == 4
     assert compute_layer_cosine(torch.tensor([1.0, 0.0]), torch.tensor([1.0, 0.0])) == pytest.approx(1.0)
     assert compute_layer_cosine(torch.tensor([1.0, 0.0]), torch.tensor([-1.0, 0.0])) == pytest.approx(0.0)
@@ -142,6 +204,12 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
     )
     assert cosines[:2] == pytest.approx((1.0, 0.0))
     assert cosines[2] is None
+    cosine_tensor = compute_layer_cosines_tensor(
+        torch.tensor([[1.0, 0.0], [-1.0, 0.0], [0.0, 0.0]]),
+        torch.tensor([1.0, 0.0]),
+    )
+    assert cosine_tensor[:2].tolist() == pytest.approx((1.0, 0.0))
+    assert torch.isnan(cosine_tensor[2])
 
     layer_values: list[float | None] = [0.5] * 36
     layer_values[0] = None
@@ -299,3 +367,134 @@ def test_sampling_seeds_generators_and_stopping_form_one_decoding_contract() -> 
     assert final_retained.stop
     assert final_retained.reason is StopReason.MAX_NEW_TOKENS
     assert final_retained.terminating_token_id is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        SamplingConfig(
+            name="diverse",
+            temperature=1.0,
+            top_p=0.99,
+            top_k=None,
+            repetition_penalty=1.0,
+        ),
+        SamplingConfig(
+            name="concentrated",
+            temperature=0.7,
+            top_p=0.8,
+            top_k=20,
+            repetition_penalty=1.0,
+        ),
+        SamplingConfig(
+            name="unfiltered",
+            temperature=1.3,
+            top_p=1.0,
+            top_k=None,
+            repetition_penalty=1.0,
+        ),
+    ),
+)
+def test_prepared_probability_workspace_preserves_sampling_contract(
+    config: SamplingConfig,
+) -> None:
+    logits = torch.randn(3, 64, generator=torch.Generator().manual_seed(7))
+    logits[0, -1] = -torch.inf
+    untouched = logits.clone()
+    workspace = prepare_probability_batch(logits)
+
+    expected_transforms = apply_sampling_transforms_batch(logits, config)
+    actual_transforms = apply_sampling_transforms_prepared(
+        workspace.logits,
+        workspace.sorted_indices,
+        config,
+    )
+    assert torch.equal(actual_transforms, expected_transforms)
+    assert torch.equal(logits, untouched)
+
+    expected_generators = tuple(
+        torch.Generator().manual_seed(seed) for seed in (11, 12, 13)
+    )
+    actual_generators = tuple(
+        torch.Generator().manual_seed(seed) for seed in (11, 12, 13)
+    )
+    assert sample_next_tokens_prepared(
+        workspace.logits,
+        workspace.sorted_indices,
+        config,
+        actual_generators,
+    ) == sample_next_tokens(logits, config, expected_generators)
+    assert all(
+        torch.equal(actual.get_state(), expected.get_state())
+        for actual, expected in zip(
+            actual_generators,
+            expected_generators,
+            strict=True,
+        )
+    )
+
+    selected = torch.tensor([3, 5])
+    rows = torch.tensor([0, 2])
+    shared_metrics = compute_probability_metrics_from_workspace(
+        workspace,
+        selected,
+        rows,
+    )
+    direct_metrics = compute_probability_metrics_batch(
+        logits.index_select(0, rows),
+        selected,
+    )
+    assert shared_metrics == direct_metrics
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        SamplingConfig(
+            name="tied-nucleus",
+            temperature=1.0,
+            top_p=0.5,
+            top_k=None,
+            repetition_penalty=1.0,
+        ),
+        SamplingConfig(
+            name="tied-topk-nucleus",
+            temperature=0.7,
+            top_p=0.8,
+            top_k=3,
+            repetition_penalty=1.0,
+        ),
+        SamplingConfig(
+            name="minimum-nucleus",
+            temperature=2.0,
+            top_p=0.0001,
+            top_k=3,
+            repetition_penalty=1.0,
+        ),
+        SamplingConfig(
+            name="topk-only",
+            temperature=1.0,
+            top_p=1.0,
+            top_k=3,
+            repetition_penalty=1.0,
+        ),
+    ),
+)
+def test_prepared_sampling_matches_ties_and_filter_edges(
+    config: SamplingConfig,
+) -> None:
+    logits = torch.tensor(
+        (
+            (3.0, 3.0, 3.0, 2.0, 1.0, -torch.inf),
+            (1.0, 1.0, 0.0, 0.0, -1.0, -1.0),
+        )
+    )
+    workspace = prepare_probability_batch(logits)
+    assert torch.equal(
+        apply_sampling_transforms_prepared(
+            workspace.logits,
+            workspace.sorted_indices,
+            config,
+        ),
+        apply_sampling_transforms_batch(logits, config),
+    )

@@ -10,6 +10,9 @@ from visconf.planning import load_experiment_plan, plan_experiment_group
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs" / "experiment_group.yaml"
+FULL_4090_MB32_CONFIG = (
+    ROOT / "configs" / "experiment_group_4090_full_mb32.yaml"
+)
 
 
 def test_initial_config_matches_the_fixed_experiment() -> None:
@@ -37,6 +40,41 @@ def test_initial_config_matches_the_fixed_experiment() -> None:
         "diverse",
         "concentrated",
     }
+
+
+def test_full_4090_config_resolves_the_six_run_matrix_at_microbatch_32(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_group_config(FULL_4090_MB32_CONFIG)
+
+    assert config.hardware.name == "rtx_4090_mb32"
+    assert config.hardware.accelerator == "rtx 4090"
+    assert config.hardware.max_rollout_microbatch_size == 32
+    assert config.hardware.benchmark_microbatch_sizes == (32,)
+    assert config.generation.rollouts_per_example == 32
+    assert config.generation.rollout_microbatch_size == 32
+    assert config.generation.max_new_tokens == 1024
+
+    plan = plan_experiment_group(
+        config,
+        experiment_group_id="exp-4090-full-mb32",
+        output_root=tmp_path,
+    )
+    assert len(plan.runs) == 6
+    assert {
+        (run.dataset.name, run.sampling.name)
+        for run in plan.runs
+    } == {
+        (dataset, strategy)
+        for dataset in ("mathverse", "mathvista", "mmmu_pro")
+        for strategy in ("diverse", "concentrated")
+    }
+    assert all(
+        run.generation.rollouts_per_example == 32
+        and run.generation.rollout_microbatch_size == 32
+        and run.generation.max_new_tokens == 1024
+        for run in plan.runs
+    )
 
 
 def test_plan_is_six_isolated_idempotent_runs(tmp_path: Path) -> None:

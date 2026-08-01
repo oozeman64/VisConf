@@ -614,11 +614,13 @@ For each layer call, instrumentation:
 1. Forces eager post-softmax attention output locally.
 2. Selects only the predictor query row.
 3. Converts that row to float32.
-4. Validates it before accumulation.
-5. Adds head sums to every applicable attention scenario.
+4. Validates all microbatch rows without per-row host synchronization.
+5. Adds batched head sums to every applicable attention scenario on-device.
 6. Captures the layer output at the predictor position.
-7. Computes the normalized cosine against that layer's float32 image prototype.
-8. Updates valid-layer sums and counts.
+7. Computes batched normalized cosines against that layer's float32 image
+   prototype and keeps the results on-device through the forward pass.
+8. Transfers the 36-layer cosine matrix once at finalization, then updates
+   per-row valid-layer sums and counts.
 9. Drops references to full attention and temporary hidden tensors.
 
 On the batch-size-one prompt prefill it additionally captures each layer's image
@@ -652,6 +654,26 @@ The function receives a one-dimensional raw-logit vector. Sampling-transformed
 logits are a contract violation. It uses the full vocabulary and implements all
 31 physical columns specified by `OUTPUT_SCHEMA.md`.
 
+The generation engine uses the equivalent batched workspace API:
+
+~~~python
+def prepare_probability_batch(
+    raw_logits: torch.Tensor,
+) -> ProbabilityBatchWorkspace: ...
+
+def compute_probability_metrics_from_workspace(
+    workspace: ProbabilityBatchWorkspace,
+    selected_token_ids: torch.Tensor,
+    row_indices: torch.Tensor | None = None,
+) -> tuple[ProbabilityMetrics, ...]: ...
+~~~
+
+The workspace contains validated float32 raw logits and one descending
+full-vocabulary index ordering. It contains no sampling-transformed logits,
+belongs to one active decoding step, and is discarded before advancing to the
+next model output. Retained-row metrics gather through the shared ordering
+rather than sorting the full vocabulary again.
+
 ### Attention
 
 ~~~python
@@ -684,7 +706,10 @@ stable invalid-reason codes. It does not redefine metric formulas.
 ### Accumulation
 
 `metrics/accumulator.py` owns online float32 scenario sums, per-layer cosine
-sums, and valid-layer counts. It never stores full layer attention across calls.
+sums, and valid-layer counts. Microbatch attention sums stay batched on-device;
+final scenario vectors cross to the CPU once per scenario and their formulas are
+evaluated with batched CPU tensor reductions. The accumulator never stores full
+layer attention across calls.
 
 
 ## Sampling contract
@@ -697,6 +722,13 @@ def sample_next_token(
     config: SamplingConfig,
     generator: torch.Generator,
 ) -> int: ...
+
+def sample_next_tokens_prepared(
+    raw_logits: torch.Tensor,
+    sorted_indices: torch.Tensor,
+    config: SamplingConfig,
+    generators: tuple[torch.Generator, ...],
+) -> tuple[int, ...]: ...
 ~~~
 
 The function clones or derives selection logits without modifying
@@ -710,6 +742,15 @@ The function clones or derives selection logits without modifying
 Top-p keeps the first token that reaches or crosses the cumulative threshold.
 `top_k=None` applies no top-k filter. Repetition penalty is not applied because
 its configured value is exactly 1.0.
+
+The prepared microbatch path reuses the raw distribution's descending
+vocabulary ordering from `ProbabilityBatchWorkspace`. Positive temperature
+scaling preserves that ordering. When top-k is active, only the retained
+candidates are ordered after applying the original top-k operation; vocabulary
+index ordering preserves the public path's tied-logit behavior. In every case,
+the final dense probability vector remains in original vocabulary order.
+Sampling directly from a sorted or truncated probability vector is forbidden
+because it changes `torch.multinomial` index/RNG behavior.
 
 Sampling is performed once per rollout row with that rollout's independent
 generator. A batched `torch.multinomial` call using one shared generator is
@@ -773,18 +814,21 @@ microbatch:
 
 1. Create one independently seeded `RolloutState` per rollout.
 2. Clone and batch-repeat the immutable base KV cache.
-3. Replicate the `y_1` distribution-level, attention, and hidden observations
-   as read-only inputs for each rollout.
-4. Sample each row separately with its own generator.
-5. Complete selected-token probability metrics using the sampled ID and the same
-   raw logits that predicted it.
-6. Trim selected stop tokens without writing token-family rows.
-7. For retained tokens, create one token row and all three family rows.
-8. If maximum length is reached, finish after storing the retained token.
-9. Select surviving cache rows in the same order as surviving rollout states.
-10. Feed retained selected tokens through the cache to obtain observations
+3. Replicate the `y_1` raw logits, attention, and hidden observations as
+   read-only inputs for each rollout.
+4. Validate the raw-logit microbatch once and prepare one descending vocabulary
+   ordering shared by selection and probability metrics.
+5. Apply sampling transforms to a copy and sample each dense row separately
+   with its own generator.
+6. Complete selected-token probability metrics from the prepared raw-logit
+   workspace using the sampled ID.
+7. Trim selected stop tokens without writing token-family rows.
+8. For retained tokens, create one token row and all three family rows.
+9. If maximum length is reached, finish after storing the retained token.
+10. Select surviving cache rows in the same order as surviving rollout states.
+11. Feed retained selected tokens through the cache to obtain observations
     predicting the next token.
-11. Repeat until no active rows remain.
+12. Repeat until no active rows remain.
 
 The engine yields completed rollouts; it does not write Parquet.
 
@@ -1101,6 +1145,7 @@ Live only for one rollout microbatch:
 - Repeated mutable KV cache.
 - Active rollout states and generators.
 - Current raw logits.
+- Current raw-logit probability workspace and vocabulary ordering.
 - Reduced observations.
 - Completed rollout bundles not yet committed.
 
@@ -1256,6 +1301,10 @@ Hidden tests cover:
 - Null top-k performs no filtering.
 - Raw logits remain byte-for-byte unchanged.
 - Independent generator sequences.
+- Exact prepared-versus-public transforms, sampled tokens, and generator states
+  for both configured strategies.
+- Tied logits, `-inf`, top-k-only, very small top-p, and unfiltered edges through
+  the prepared path.
 - Stable seed vectors.
 - Identical rollout outputs at microbatch sizes 1, 2, and 4 for a deterministic
   mock model.

@@ -64,6 +64,12 @@ The RTX 4090 development profile uses a default microbatch of 2 and benchmarks
 1, 2, and 4. It is intended for local and low-cost acceptance runs; the frozen
 production group remains H100 by default.
 
+`configs/experiment_group_4090_full_mb32.yaml` is the separately validated
+local full-run profile. It uses 32 rollouts, microbatch 32, a 1,024-token limit,
+and writes beneath `VisConf/outputs/`. It does not replace the conservative
+profile for unknown prompt shapes and does not change the frozen H100 production
+selection.
+
 ## 1. Recreate the locked environment
 
 Create and activate the Conda environment named `qwen3vl-metrics`, then install
@@ -117,6 +123,25 @@ The selected H100 profile measures microbatches 16 and 32. The A100 40 GB and
 80 GB profiles measure 4/8 and 8/16 respectively. Each report records prompt
 time, decode time, total time, peak allocated memory, retained-token throughput,
 OOM fallback count, environment details, and a retained-ID hash.
+
+For a runner-backed local RTX 4090 check that also commits the complete output
+transaction, use:
+
+~~~bash
+scripts/run_efficiency_benchmark.sh \
+  outputs/benchmarks/rtx4090-mb32 \
+  --config configs/experiment_group_4090_full_mb32.yaml \
+  --group-id benchmark-rtx4090-mb32 \
+  --rollouts 32 \
+  --microbatch 32 \
+  --max-new-tokens 1024
+~~~
+
+The command must finish with 32 committed rollouts, no orphan parts, and equal
+row counts for tokens and all three token-metric families. Its output includes
+examples and generation Parquet files, atomic core-table shards, a checkpoint,
+and updated manifests; it is therefore suitable for end-to-end regression
+comparison, unlike a timing-only hardware probe.
 
 A production default is accepted only when every configured candidate completes
 and retained-ID hashes agree. If the larger candidate OOMs, lower the hardware

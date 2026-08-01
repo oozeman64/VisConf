@@ -79,6 +79,7 @@ VisConf/
 |-- configs/
 |   |-- experiment_group.yaml
 |   |-- experiment_group_4090.yaml
+|   |-- experiment_group_4090_full_mb32.yaml
 |   |-- model/
 |   |   `-- qwen2_5_vl_3b.yaml
 |   |-- datasets/
@@ -93,6 +94,7 @@ VisConf/
 |       |-- a100_40gb.yaml
 |       |-- a100_80gb.yaml
 |       |-- rtx_4090.yaml
+|       |-- rtx_4090_mb32.yaml
 |       `-- h100.yaml
 |-- docs/
 |   |-- ATTENTION_METRICS.MD
@@ -160,7 +162,9 @@ VisConf/
 |   `-- test_phase11.py
 `-- scripts/
     |-- benchmark_hardware.sh
+    |-- run_efficiency_benchmark.sh
     |-- run_experiment_group.sh
+    |-- run_full_output_benchmark.py
     |-- run_real_generation_smoke.py
     |-- run_resume_rehearsal.sh
     |-- run_single_run.sh
@@ -197,7 +201,15 @@ only when they preserve the dependency rules below.
 - `generation/engine.py` implements the predictor-aligned cached decoding loop.
 - `generation/sampling.py` applies temperature, top-k, and top-p only for token
   selection. Use the fixed order temperature, top-k, then top-p.
-- Raw logits must be sent to probability metrics before sampling transformations.
+- Probability metrics must receive raw logits, never sampling-transformed logits.
+  The engine may prepare a short-lived immutable raw-logit workspace before
+  sampling, then complete selected-token metrics from it after the token is
+  retained.
+- A prepared sampling path may reuse the raw distribution's descending
+  vocabulary ordering because positive-temperature scaling preserves order. It
+  must still construct dense probabilities in original vocabulary order and
+  call `torch.multinomial` once per rollout generator. Preserve top-k tie
+  behavior and do not sample directly from sorted probabilities.
 - `top_k: null` means no top-k filtering. Do not translate it to an arbitrarily
   large top-k value.
 - Unless configured otherwise in a future experiment, repetition penalty is
@@ -223,9 +235,11 @@ For every decoder layer, instrumentation should:
 1. Obtain post-softmax eager self-attention.
 2. Select only the predictor query row `q_t`.
 3. Convert selected attention to float32.
-4. Accumulate head/layer sums for the three attention scenarios.
+4. Accumulate head/layer sums for the three attention scenarios in batched
+   device tensors.
 5. Capture the layer output at `q_t`.
-6. Compute the layer hidden-state/image-prototype cosine.
+6. Compute the layer hidden-state/image-prototype cosine for the full
+   microbatch and defer its device-to-host conversion until the forward ends.
 7. Discard the layer attention tensor.
 
 The image-token hidden states and layer prototypes are captured once on the
@@ -235,6 +249,10 @@ initial prompt pass, retained in float32, and reused at every decoding step.
 
 - `metrics/probability.py`, `attention.py`, and `hidden_state.py` implement the
   corresponding documentation as pure functions.
+- `metrics/probability.py` owns the short-lived validated batch workspace used
+  to share one full-vocabulary ordering between sampling and raw-logit metrics.
+  The workspace must not cache sampling-transformed values or survive a
+  generation step.
 - `accumulator.py` handles scenario-level online sums and valid-layer counts.
 - `validation.py` enforces ranges, invariants, and invalid-input policies.
 - Never implement KL support reduction.
@@ -361,10 +379,11 @@ q_t = y_{t-1}, t > 1
 The loop is:
 
 1. Run the prompt to obtain the raw distribution and predictor state for `y_1`.
-2. Compute distribution-level probability, attention, and hidden metrics.
-3. Apply the strategy only to a copy of the logits used for selection.
-4. Sample `y_1`.
-5. If it is retained, compute selected-token metrics and write the completed row.
+2. Validate the raw-logit batch and prepare its reusable vocabulary ordering.
+3. Apply the strategy only to a copy of the raw logits.
+4. Sample `y_1` with the rollout's independent generator.
+5. If it is retained, compute raw-logit probability metrics from the prepared
+   workspace and write the aligned probability, attention, and hidden rows.
 6. Feed `y_1` through the KV cache to obtain the predictive computation for
    `y_2`.
 7. Continue until termination.
@@ -377,6 +396,9 @@ processing the token named by the same row.
 - Run one dataset example at a time; do not initially batch unrelated examples.
 - `rollouts_per_example` and `rollout_microbatch_size` are different settings.
 - Start conservatively and benchmark with real visual sequence lengths:
+  - RTX 4090 24 GB: use the conservative profile initially; the dedicated
+    `rtx_4090_mb32` profile is validated for the current one-example-at-a-time,
+    32-rollout workload.
   - A100 40 GB: microbatch 4-8.
   - A100 80 GB: microbatch 8-16.
   - H100 80 GB: microbatch 16, then test 32.
@@ -386,6 +408,10 @@ processing the token named by the same row.
 - Avoid automatic CPU offload for a model that fits on the selected GPU.
 - Because initial eager prompt attention is quadratic, do not assume that a 3B
   model implies all 32 rollouts can safely share one prompt batch.
+- Keep final scenario attention metrics CPU-batched after one device-to-host
+  transfer. Moving those reductions fully onto the RTX 4090 regressed measured
+  decode time and was reverted; require new A/B evidence before changing this
+  boundary.
 
 ## Determinism
 
@@ -408,6 +434,8 @@ At minimum, add tests for:
 4. Qwen special-token, image-span, padding, and `G_t` position grouping.
 5. Hidden-state norm thresholds and valid-layer aggregation.
 6. Sampling transformations and proof that they do not alter raw-logit metrics.
+   Include exact prepared-versus-public sampling comparisons for both production
+   strategies, generator states, tied logits, top-k, top-p edges, and `-inf`.
 7. Reproducibility across rollout microbatch sizes.
 8. One-to-one key equality across `tokens` and all three metric-family tables.
 9. Atomic multi-table shard output, orphan-part handling, and resume behavior.

@@ -11,7 +11,7 @@ from typing import Any
 import torch
 
 from visconf.generation.rollout_state import RolloutState
-from visconf.generation.sampling import sample_next_tokens
+from visconf.generation.sampling import sample_next_tokens_prepared
 from visconf.generation.stopping import StopReason, decide_stop
 from visconf.metrics.accumulator import AttentionScenarioAggregate
 from visconf.metrics.attention import (
@@ -24,7 +24,8 @@ from visconf.metrics.attention import (
 from visconf.metrics.probability import (
     ProbabilityMetrics,
     compute_probability_metrics,
-    compute_probability_metrics_batch,
+    compute_probability_metrics_from_workspace,
+    prepare_probability_batch,
 )
 from visconf.metrics.validation import MetricInputError
 from visconf.models.instrumentation import (
@@ -283,8 +284,10 @@ class GenerationEngine:
             return groups_cache[retained_before]
 
         while active:
-            sampled_ids = sample_next_tokens(
-                raw_logits,
+            probability_workspace = prepare_probability_batch(raw_logits)
+            sampled_ids = sample_next_tokens_prepared(
+                probability_workspace.logits,
+                probability_workspace.sorted_indices,
                 sampling,
                 tuple(state.generator for state in active),
             )
@@ -322,9 +325,10 @@ class GenerationEngine:
                     device=self.facade.device,
                 )
                 try:
-                    batch_metrics = compute_probability_metrics_batch(
-                        raw_logits.index_select(0, retained_tensor),
+                    batch_metrics = compute_probability_metrics_from_workspace(
+                        probability_workspace,
                         selected_tensor,
+                        retained_tensor,
                     )
                     probability_by_row.update(
                         {

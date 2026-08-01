@@ -258,7 +258,7 @@ def compute_attention_metrics_batch(
     scenario_vectors: torch.Tensor,
     groups: Sequence[StepTokenGroups],
 ) -> tuple[AttentionScenarioMetrics, ...]:
-    """Compute a scenario microbatch after one GPU-to-CPU transfer."""
+    """Compute a scenario microbatch with one transfer and batched reductions."""
 
     if not isinstance(scenario_vectors, torch.Tensor):
         raise MetricInputError("scenario_vectors must be a torch.Tensor")
@@ -272,7 +272,181 @@ def compute_attention_metrics_batch(
         device="cpu",
         dtype=torch.float32,
     )
-    return tuple(
-        compute_attention_metrics(vectors[index], group)
-        for index, group in enumerate(groups)
+    valid_rows = torch.isfinite(vectors).all(dim=1) & ~torch.any(
+        vectors < -ATTENTION_EPSILON,
+        dim=1,
     )
+    vectors = torch.where(
+        valid_rows[:, None],
+        vectors.clamp_min(0),
+        torch.zeros_like(vectors),
+    )
+    grouped_rows: dict[StepTokenGroups, list[int]] = {}
+    for row_index, group in enumerate(groups):
+        _validate_groups(group, vectors.shape[1])
+        grouped_rows.setdefault(group, []).append(row_index)
+
+    results: list[AttentionScenarioMetrics | None] = [None] * vectors.shape[0]
+    for group, row_indices in grouped_rows.items():
+        indices = torch.tensor(row_indices, dtype=torch.long)
+        rows = vectors.index_select(0, indices)
+        row_validity = valid_rows.index_select(0, indices)
+        values = _compute_attention_metrics_batch_for_group(rows, group)
+        matrix = torch.stack(
+            [values[name] for name in ATTENTION_METRICS],
+            dim=1,
+        ).tolist()
+        validity = row_validity.tolist()
+        for offset, row_index in enumerate(row_indices):
+            if not validity[offset]:
+                results[row_index] = AttentionScenarioMetrics(
+                    valid=False,
+                    **{name: None for name in ATTENTION_METRICS},
+                )
+                continue
+            results[row_index] = AttentionScenarioMetrics(
+                valid=True,
+                **{
+                    name: (
+                        None
+                        if math.isnan(matrix[offset][metric_index])
+                        else float(matrix[offset][metric_index])
+                    )
+                    for metric_index, name in enumerate(ATTENTION_METRICS)
+                },
+            )
+    if any(result is None for result in results):
+        raise MetricInputError("attention batch result is incomplete")
+    return tuple(result for result in results if result is not None)
+
+
+def _undefined(batch_size: int) -> torch.Tensor:
+    return torch.full((batch_size,), torch.nan, dtype=torch.float32)
+
+
+def _group_metrics_batch(
+    vectors: torch.Tensor,
+    positions: tuple[int, ...],
+    prefix: str,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    batch_size = vectors.shape[0]
+    if not positions:
+        total = torch.zeros(batch_size, dtype=torch.float32)
+        undefined = _undefined(batch_size)
+        return {
+            f"{prefix}_total": total,
+            f"{prefix}_avg": undefined,
+            f"{prefix}_gini": undefined,
+            f"{prefix}_entropy": undefined,
+            f"{prefix}_kl_u_p": undefined,
+            f"{prefix}_kl_p_u": undefined,
+            f"{prefix}_dist_perplexity": undefined,
+        }, total
+
+    indices = torch.tensor(positions, dtype=torch.long)
+    selected = vectors.index_select(1, indices)
+    total = selected.sum(dim=1)
+    distribution = selected / total.clamp_min(ATTENTION_EPSILON)[:, None]
+    positive = distribution > 0
+    log_distribution = torch.where(
+        positive,
+        torch.log(distribution),
+        torch.full_like(distribution, -torch.inf),
+    )
+    entropy = torch.where(
+        positive,
+        distribution * log_distribution,
+        torch.zeros_like(distribution),
+    ).sum(dim=1)
+    kl_u_p = torch.where(
+        positive.all(dim=1),
+        -math.log(len(positions)) - log_distribution.mean(dim=1),
+        torch.full_like(total, torch.inf),
+    )
+    defined = total >= ATTENTION_EPSILON
+    undefined = _undefined(batch_size)
+
+    def when_defined(value: torch.Tensor) -> torch.Tensor:
+        return torch.where(defined, value, undefined)
+
+    return {
+        f"{prefix}_total": total,
+        f"{prefix}_avg": total / len(positions),
+        f"{prefix}_gini": when_defined(distribution.square().sum(dim=1)),
+        f"{prefix}_entropy": when_defined(entropy),
+        f"{prefix}_kl_u_p": when_defined(kl_u_p),
+        f"{prefix}_kl_p_u": when_defined(
+            math.log(len(positions)) + entropy
+        ),
+        f"{prefix}_dist_perplexity": when_defined(-torch.exp(-entropy)),
+    }, total
+
+
+def _ratio_batch(
+    numerator: torch.Tensor,
+    denominator: torch.Tensor,
+) -> torch.Tensor:
+    return torch.where(
+        denominator >= ATTENTION_EPSILON,
+        numerator / denominator.clamp_min(ATTENTION_EPSILON),
+        _undefined(denominator.shape[0]),
+    )
+
+
+def _compute_attention_metrics_batch_for_group(
+    vectors: torch.Tensor,
+    groups: StepTokenGroups,
+) -> dict[str, torch.Tensor]:
+    image = groups.image_positions
+    prompt = groups.prompt_text_positions
+    generated = groups.generated_text_positions
+    prompt_generated = prompt + generated
+    all_positions = image + prompt_generated
+
+    values: dict[str, torch.Tensor] = {}
+    totals: dict[str, torch.Tensor] = {}
+    for prefix, positions in (
+        ("img_attn", image),
+        ("prompt_text_attn", prompt),
+        ("generated_text_attn", generated),
+        ("prompt_generated_text_attn", prompt_generated),
+        ("all_attn", all_positions),
+    ):
+        group_values, total = _group_metrics_batch(
+            vectors,
+            positions,
+            prefix,
+        )
+        values.update(group_values)
+        totals[prefix] = total
+
+    image_total = totals["img_attn"]
+    prompt_total = totals["prompt_text_attn"]
+    generated_total = totals["generated_text_attn"]
+    all_total = image_total + prompt_total + generated_total
+    values.update(
+        {
+            "attn_ratio_img_to_prompt_text": _ratio_batch(
+                image_total,
+                image_total + prompt_total,
+            ),
+            "attn_ratio_img_to_generated_text": _ratio_batch(
+                image_total,
+                image_total + generated_total,
+            ),
+            "attn_ratio_img_to_all": _ratio_batch(image_total, all_total),
+            "attn_ratio_prompt_text_to_all": _ratio_batch(
+                prompt_total,
+                all_total,
+            ),
+            "attn_ratio_generated_text_to_all": _ratio_batch(
+                generated_total,
+                all_total,
+            ),
+            "attn_ratio_prompt_generated_text_to_all": _ratio_batch(
+                prompt_total + generated_total,
+                all_total,
+            ),
+        }
+    )
+    return values
