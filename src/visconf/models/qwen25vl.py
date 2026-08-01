@@ -67,6 +67,7 @@ class QwenModelFacade:
         self.processor = processor
         self.device = device
         self.tokenizer = processor.tokenizer
+        self._token_string_cache: dict[int, tuple[str, str]] = {}
 
     @classmethod
     def load(cls, config: ModelSettings) -> "QwenModelFacade":
@@ -200,12 +201,7 @@ class QwenModelFacade:
             raise QwenFacadeError("cache batch size must be positive")
         if not hasattr(base_cache, "to_legacy_cache"):
             raise QwenFacadeError("unsupported Transformers cache type")
-        legacy = base_cache.to_legacy_cache()
-        cloned = tuple(
-            (key.detach().clone(), value.detach().clone())
-            for key, value in legacy
-        )
-        cache = DynamicCache.from_legacy_cache(cloned)
+        cache = DynamicCache.from_legacy_cache(base_cache.to_legacy_cache())
         cache.batch_repeat_interleave(batch_size)
         return cache
 
@@ -295,14 +291,24 @@ class QwenModelFacade:
         )
 
     def token_piece(self, token_id: int) -> str:
-        return str(self.tokenizer.convert_ids_to_tokens(token_id))
+        return self.token_strings(token_id)[0]
 
     def token_text(self, token_id: int) -> str:
-        return self.tokenizer.decode(
-            [token_id],
-            skip_special_tokens=False,
-            clean_up_tokenization_spaces=False,
-        )
+        return self.token_strings(token_id)[1]
+
+    def token_strings(self, token_id: int) -> tuple[str, str]:
+        cached = self._token_string_cache.get(token_id)
+        if cached is None:
+            cached = (
+                str(self.tokenizer.convert_ids_to_tokens(token_id)),
+                self.tokenizer.decode(
+                    [token_id],
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                ),
+            )
+            self._token_string_cache[token_id] = cached
+        return cached
 
     def stop_token_ids(self) -> frozenset[int]:
         return frozenset(int(value) for value in self.stop_token_id_names())

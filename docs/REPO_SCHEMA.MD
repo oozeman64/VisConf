@@ -1044,7 +1044,12 @@ visconf verify-storage --output-root <persistent_output_root> [--initialize]
 - `validate` verifies manifests, checkpoints, schemas, hashes, and relational
   invariants; `--production` additionally requires a benchmark report.
 - `benchmark` measures configured microbatch candidates only on matching
-  target hardware.
+  target hardware. `--prompts` can select multiple real examples; results are
+  hashed and released one rollout at a time so long efficiency baselines do not
+  retain every prompt's metric rows in memory.
+- `scripts/run_efficiency_benchmark.sh` runs a bounded real-model benchmark
+  through the normal runner, transaction, checkpoint, manifest, and resume
+  paths so performance work can be compared against complete Parquet output.
 - `verify-storage` initializes or verifies the persistent-output marker.
 
 Commands return nonzero on configuration, validation, or unhandled execution

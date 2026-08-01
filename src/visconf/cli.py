@@ -69,6 +69,7 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--microbatch", type=int, nargs="+")
     benchmark.add_argument("--rollouts", type=int)
     benchmark.add_argument("--max-new-tokens", type=int)
+    benchmark.add_argument("--prompts", type=int, default=1)
 
     storage = commands.add_parser(
         "verify-storage",
@@ -216,6 +217,7 @@ def _benchmark(args: argparse.Namespace) -> int:
         candidates=args.microbatch,
         rollout_count=args.rollouts,
         max_new_tokens=args.max_new_tokens,
+        prompt_count=args.prompts,
     )
     print(json.dumps(asdict(report), indent=2, sort_keys=True))
     return 0

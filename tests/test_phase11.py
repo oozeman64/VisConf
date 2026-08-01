@@ -1,9 +1,10 @@
 """Phase 11 production-readiness acceptance."""
 
-import json
+import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from visconf.benchmark import benchmark_candidates
@@ -12,8 +13,12 @@ from visconf.config import (
     load_experiment_group_config,
 )
 from visconf.planning import plan_experiment_group
-from visconf.production import validate_production_readiness
+from visconf.production import (
+    ProductionValidationError,
+    validate_production_readiness,
+)
 from visconf.storage.persistence import (
+    PersistenceError,
     initialize_persistence_marker,
     verify_persistence_marker,
 )
@@ -60,47 +65,52 @@ def test_persistence_marker_survives_independent_verification(tmp_path):
     assert "verified_at_utc" in verified
 
 
-def test_production_validator_and_launch_scripts(tmp_path):
+def test_full_output_benchmark_initializes_then_verifies_storage(tmp_path):
+    path = ROOT / "scripts" / "run_full_output_benchmark.py"
+    spec = importlib.util.spec_from_file_location(
+        "run_full_output_benchmark",
+        path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ensure = module._ensure_persistent_output_root
+
+    initialized = ensure(tmp_path)
+    verified = ensure(tmp_path)
+
+    assert initialized["marker_id"] == verified["marker_id"]
+    (tmp_path / ".visconf-persistent-storage.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    with pytest.raises(PersistenceError):
+        ensure(tmp_path)
+
+
+def test_production_validator_rejects_incomplete_group_and_launch_scripts(
+    tmp_path,
+):
     loaded = load_experiment_group_config(CONFIG)
     plan = plan_experiment_group(
         loaded,
         experiment_group_id="exp-production",
         output_root=tmp_path,
     )
-    marker = initialize_persistence_marker(tmp_path)
-    benchmarked_run = plan.runs[0]
-    hardware = plan.runs[0].hardware
-    report = {
-        "run_id": benchmarked_run.run_id,
-        "run_config_hash": benchmarked_run.config_hash,
-        "hardware_profile": hardware.model_dump(mode="json"),
-        "measurements": [
-            {
-                "requested_microbatch_size": size,
-                "status": "complete",
-                "retained_ids_sha256": "same-sequence",
-            }
-            for size in hardware.benchmark_microbatch_sizes
-        ],
-    }
-    report_path = tmp_path / "benchmark.json"
-    report_path.write_text(
-        json.dumps(report),
-        encoding="utf-8",
-    )
-
-    readiness = validate_production_readiness(
-        plan,
-        ROOT,
-        report_path,
-    )
-    assert readiness.run_count == 6
-    assert readiness.hardware_profile == "h100"
-    assert readiness.persistent_marker_id == marker["marker_id"]
+    with pytest.raises(
+        ProductionValidationError,
+        match="production experiment manifest must be complete",
+    ):
+        validate_production_readiness(
+            plan,
+            ROOT,
+            tmp_path / "missing-benchmark.json",
+        )
 
     scripts = sorted((ROOT / "scripts").glob("*.sh"))
     assert {path.name for path in scripts} == {
         "benchmark_hardware.sh",
+        "run_efficiency_benchmark.sh",
         "run_experiment_group.sh",
         "run_resume_rehearsal.sh",
         "run_single_run.sh",

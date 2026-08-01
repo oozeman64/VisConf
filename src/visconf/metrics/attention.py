@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
@@ -250,3 +251,28 @@ def compute_attention_metrics(
         }
     )
     return AttentionScenarioMetrics(valid=True, **values)
+
+
+@torch.inference_mode()
+def compute_attention_metrics_batch(
+    scenario_vectors: torch.Tensor,
+    groups: Sequence[StepTokenGroups],
+) -> tuple[AttentionScenarioMetrics, ...]:
+    """Compute a scenario microbatch after one GPU-to-CPU transfer."""
+
+    if not isinstance(scenario_vectors, torch.Tensor):
+        raise MetricInputError("scenario_vectors must be a torch.Tensor")
+    if scenario_vectors.ndim != 2 or scenario_vectors.shape[0] == 0:
+        raise MetricInputError(
+            "scenario_vectors must have shape [batch, keys]"
+        )
+    if len(groups) != scenario_vectors.shape[0]:
+        raise MetricInputError("token-group batch differs from attention")
+    vectors = scenario_vectors.detach().to(
+        device="cpu",
+        dtype=torch.float32,
+    )
+    return tuple(
+        compute_attention_metrics(vectors[index], group)
+        for index, group in enumerate(groups)
+    )

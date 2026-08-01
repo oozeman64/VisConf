@@ -6,7 +6,9 @@ import torch
 
 from visconf.generation.sampling import (
     apply_sampling_transforms,
+    apply_sampling_transforms_batch,
     sample_next_token,
+    sample_next_tokens,
 )
 from visconf.generation.stopping import (
     StopReason,
@@ -23,16 +25,19 @@ from visconf.metrics.attention import (
     AttentionScenarioMetrics,
     StepTokenGroups,
     compute_attention_metrics,
+    compute_attention_metrics_batch,
 )
 from visconf.metrics.hidden_state import (
     HIDDEN_STATE_METRICS,
     aggregate_hidden_metrics,
     compute_layer_cosine,
+    compute_layer_cosines,
 )
 from visconf.metrics.probability import (
     PROBABILITY_METRICS,
     ProbabilityMetrics,
     compute_probability_metrics,
+    compute_probability_metrics_batch,
 )
 from visconf.types import SamplingConfig
 from visconf.utils.seeds import (
@@ -89,6 +94,10 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
         generated_text_positions=(3,),
     )
     metrics = compute_attention_metrics(vector, groups)
+    assert compute_attention_metrics_batch(
+        torch.stack((vector, vector)),
+        (groups, groups),
+    ) == (metrics, metrics)
 
     assert len(ATTENTION_METRICS) == 41
     assert len(ATTENTION_SCENARIOS) * len(ATTENTION_METRICS) == 123
@@ -127,6 +136,12 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
     assert compute_layer_cosine(torch.tensor([1.0, 0.0]), torch.tensor([1.0, 0.0])) == pytest.approx(1.0)
     assert compute_layer_cosine(torch.tensor([1.0, 0.0]), torch.tensor([-1.0, 0.0])) == pytest.approx(0.0)
     assert compute_layer_cosine(torch.zeros(2), torch.ones(2)) is None
+    cosines = compute_layer_cosines(
+        torch.tensor([[1.0, 0.0], [-1.0, 0.0], [0.0, 0.0]]),
+        torch.tensor([1.0, 0.0]),
+    )
+    assert cosines[:2] == pytest.approx((1.0, 0.0))
+    assert cosines[2] is None
 
     layer_values: list[float | None] = [0.5] * 36
     layer_values[0] = None
@@ -218,6 +233,60 @@ def test_sampling_seeds_generators_and_stopping_form_one_decoding_contract() -> 
     assert interleaved_b == [
         sample_next_token(raw_logits, config, replay_b) for _ in range(8)
     ]
+
+    _, batch_a = make_rollout_generator(
+        base_seed=42,
+        dataset="mathverse",
+        sample_id="sample-001",
+        strategy="diverse",
+        rollout_index=0,
+        device="cpu",
+    )
+    _, batch_b = make_rollout_generator(
+        base_seed=42,
+        dataset="mathverse",
+        sample_id="sample-001",
+        strategy="diverse",
+        rollout_index=1,
+        device="cpu",
+    )
+    _, expected_a = make_rollout_generator(
+        base_seed=42,
+        dataset="mathverse",
+        sample_id="sample-001",
+        strategy="diverse",
+        rollout_index=0,
+        device="cpu",
+    )
+    _, expected_b = make_rollout_generator(
+        base_seed=42,
+        dataset="mathverse",
+        sample_id="sample-001",
+        strategy="diverse",
+        rollout_index=1,
+        device="cpu",
+    )
+    logits_batch = torch.stack((raw_logits, raw_logits))
+    assert torch.equal(
+        apply_sampling_transforms_batch(logits_batch, config)[0],
+        transformed,
+    )
+    assert sample_next_tokens(
+        logits_batch,
+        config,
+        (batch_a, batch_b),
+    ) == (
+        sample_next_token(raw_logits, config, expected_a),
+        sample_next_token(raw_logits, config, expected_b),
+    )
+
+    selected = torch.tensor([1, 3])
+    batched_metrics = compute_probability_metrics_batch(
+        logits_batch,
+        selected,
+    )
+    assert batched_metrics[0] == compute_probability_metrics(raw_logits, 1)
+    assert batched_metrics[1] == compute_probability_metrics(raw_logits, 3)
 
     stop_ids = resolve_stop_token_ids(151645, 151645)
     immediate = decide_stop(151645, 0, 4, stop_ids)

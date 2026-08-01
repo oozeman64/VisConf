@@ -152,6 +152,8 @@ def test_real_qwen_prefill_cache_copy_and_two_step_decode() -> None:
 
             selected = int(torch.argmax(prefill.raw_logits).item())
             copied_cache = facade.repeat_cache(prefill.cache, batch_size=2)
+            assert prefill.cache.to_legacy_cache()[0][0].shape[0] == 1
+            assert copied_cache.to_legacy_cache()[0][0].shape[0] == 2
             copied = facade.decode_step(
                 torch.tensor([selected, selected]),
                 copied_cache,
@@ -196,4 +198,3 @@ def test_real_qwen_prefill_cache_copy_and_two_step_decode() -> None:
     finally:
         del facade
         torch.cuda.empty_cache()
-

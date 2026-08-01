@@ -34,6 +34,8 @@ class BenchmarkError(RuntimeError):
 class BenchmarkMeasurement:
     requested_microbatch_size: int
     rollout_count: int
+    prompt_count: int
+    completed_prompt_count: int
     status: str
     prompt_seconds: float
     decode_seconds: float
@@ -52,6 +54,8 @@ class BenchmarkReport:
     run_config_hash: str
     dataset: str
     sample_id: str
+    sample_ids: tuple[str, ...]
+    prompt_count: int
     hardware_profile: dict[str, Any]
     environment: dict[str, Any]
     max_new_tokens: int
@@ -147,20 +151,22 @@ def _keys(
     )
 
 
-def _ids_hash(results) -> str:
-    payload = [
-        {
-            "rollout_index": result.generation.key.rollout_index,
-            "generated_token_ids": result.generation.generated_token_ids,
-        }
-        for result in results
-    ]
+def _update_ids_hash(digest, result) -> int:
+    """Add one rollout to a deterministic streaming benchmark digest."""
+
+    payload = {
+        "sample_id": result.generation.key.sample_id,
+        "rollout_index": result.generation.key.rollout_index,
+        "generated_token_ids": result.generation.generated_token_ids,
+    }
     encoded = json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+    return len(result.generation.generated_token_ids)
 
 
 def benchmark_run(
@@ -170,8 +176,9 @@ def benchmark_run(
     candidates: Sequence[int] | None = None,
     rollout_count: int | None = None,
     max_new_tokens: int | None = None,
+    prompt_count: int = 1,
 ) -> BenchmarkReport:
-    """Benchmark one real visual example on the resolved target GPU."""
+    """Benchmark real visual examples on the resolved target GPU."""
 
     _verify_hardware(run)
     sizes = tuple(candidates or benchmark_candidates(run))
@@ -190,13 +197,18 @@ def benchmark_run(
     )
     if token_limit <= 0:
         raise BenchmarkError("max_new_tokens must be positive")
+    if prompt_count <= 0:
+        raise BenchmarkError("prompt_count must be positive")
 
     adapter = create_dataset_adapter(run.dataset.adapter)
-    example = next(iter(islice(adapter.load_examples(run.dataset), 1)))
-    messages = adapter.build_messages(
-        example,
-        PromptConfig(run.dataset.prompt_template),
+    examples = tuple(
+        islice(adapter.load_examples(run.dataset), prompt_count)
     )
+    if len(examples) != prompt_count:
+        raise BenchmarkError(
+            f"dataset provided {len(examples)} prompts, "
+            f"but {prompt_count} were requested"
+        )
     facade = QwenModelFacade.load(run.model)
     measurements = []
     instrumentation = None
@@ -218,29 +230,39 @@ def benchmark_run(
                         run.schemas.seed_derivation_version
                     ),
                 )
-                prepared = facade.prepare_example(messages)
                 torch.cuda.reset_peak_memory_stats(facade.device)
                 torch.cuda.synchronize(facade.device)
                 started = time.perf_counter()
+                completed_prompts = 0
+                retained = 0
+                ids_digest = hashlib.sha256()
                 try:
-                    results = tuple(
-                        engine.generate_example(
+                    for example in examples:
+                        messages = adapter.build_messages(
+                            example,
+                            PromptConfig(run.dataset.prompt_template),
+                        )
+                        prepared = facade.prepare_example(messages)
+                        results = engine.generate_example(
                             example,
                             prepared,
                             _keys(run, example.sample_id, count),
                             run.sampling.as_domain(),
                         )
-                    )
+                        for result in results:
+                            retained += _update_ids_hash(ids_digest, result)
+                        result = None
+                        completed_prompts += 1
+                        results = ()
+                        prepared = None
                     torch.cuda.synchronize(facade.device)
                     total = time.perf_counter() - started
-                    retained = sum(
-                        len(result.generation.generated_token_ids)
-                        for result in results
-                    )
                     measurements.append(
                         BenchmarkMeasurement(
                             requested_microbatch_size=size,
                             rollout_count=count,
+                            prompt_count=prompt_count,
+                            completed_prompt_count=completed_prompts,
                             status=(
                                 "complete"
                                 if timed.oom_fallbacks == 0
@@ -259,7 +281,7 @@ def benchmark_run(
                                 retained / total if total > 0 else None
                             ),
                             oom_fallbacks=timed.oom_fallbacks,
-                            retained_ids_sha256=_ids_hash(results),
+                            retained_ids_sha256=ids_digest.hexdigest(),
                         )
                     )
                 except torch.cuda.OutOfMemoryError:
@@ -267,6 +289,8 @@ def benchmark_run(
                         BenchmarkMeasurement(
                             requested_microbatch_size=size,
                             rollout_count=count,
+                            prompt_count=prompt_count,
+                            completed_prompt_count=completed_prompts,
                             status="oom",
                             prompt_seconds=timed.prompt_seconds,
                             decode_seconds=timed.decode_seconds,
@@ -276,7 +300,7 @@ def benchmark_run(
                                     facade.device
                                 )
                             ),
-                            retained_tokens=0,
+                            retained_tokens=retained,
                             tokens_per_second=None,
                             oom_fallbacks=timed.oom_fallbacks,
                             retained_ids_sha256=None,
@@ -299,7 +323,9 @@ def benchmark_run(
         run_id=run.run_id,
         run_config_hash=run.config_hash,
         dataset=run.dataset.name,
-        sample_id=example.sample_id,
+        sample_id=examples[0].sample_id,
+        sample_ids=tuple(example.sample_id for example in examples),
+        prompt_count=prompt_count,
         hardware_profile=run.hardware.model_dump(mode="json"),
         environment=capture_environment(run.model.device),
         max_new_tokens=token_limit,

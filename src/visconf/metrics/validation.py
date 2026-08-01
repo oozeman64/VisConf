@@ -38,6 +38,37 @@ def probability_logits(
     return logits
 
 
+def probability_logits_batch(
+    raw_logits: torch.Tensor,
+    selected_token_ids: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not isinstance(raw_logits, torch.Tensor):
+        raise MetricInputError("raw_logits must be a torch.Tensor")
+    if raw_logits.ndim != 2:
+        raise MetricInputError("raw_logits must have shape [batch, vocabulary]")
+    if raw_logits.shape[0] == 0 or raw_logits.shape[1] < 2:
+        raise MetricInputError("raw_logits batch is empty or vocabulary is too small")
+    if not raw_logits.is_floating_point():
+        raise MetricInputError("raw_logits must have a floating-point dtype")
+    if not isinstance(selected_token_ids, torch.Tensor):
+        raise MetricInputError("selected_token_ids must be a torch.Tensor")
+    selected = selected_token_ids.to(
+        device=raw_logits.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    if selected.shape[0] != raw_logits.shape[0]:
+        raise MetricInputError("selected token batch differs from logits")
+    if torch.any(selected < 0) or torch.any(selected >= raw_logits.shape[1]):
+        raise MetricInputError("selected_token_ids are outside the vocabulary")
+
+    logits = raw_logits.detach().to(dtype=torch.float32)
+    if torch.isnan(logits).any() or torch.isposinf(logits).any():
+        raise MetricInputError("raw_logits contain NaN or positive infinity")
+    if torch.isneginf(logits).all(dim=-1).any():
+        raise MetricInputError("raw_logits cannot all be negative infinity")
+    return logits, selected
+
+
 def attention_vector(
     value: torch.Tensor,
 ) -> tuple[torch.Tensor | None, str | None]:

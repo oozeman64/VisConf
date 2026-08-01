@@ -48,6 +48,19 @@ visconf plan --config configs/experiment_group_4090.yaml
 python scripts/run_real_generation_smoke.py
 ~~~
 
+Capture a runner-backed RTX 4090 efficiency baseline over one real prompt,
+with 16 rollouts, microbatch 8, and a 1,024-token generation limit:
+
+~~~bash
+scripts/run_efficiency_benchmark.sh \
+  <output_root>
+~~~
+
+Unlike the timing-only `visconf benchmark` command, this test uses the normal
+runner and commits a complete output directory: examples, generations, tokens,
+all metric-family Parquet files, a checkpoint, and updated manifests. Additional
+script arguments override the defaults.
+
 Each dataset-by-strategy cell has its own immutable `run_id`, output directory,
 checkpoint inventory, and resume state. Core shards commit generation, token,
 probability, attention, and hidden-state tables atomically. Scores are versioned

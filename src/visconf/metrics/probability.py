@@ -7,7 +7,10 @@ from dataclasses import dataclass
 
 import torch
 
-from visconf.metrics.validation import probability_logits
+from visconf.metrics.validation import (
+    probability_logits,
+    probability_logits_batch,
+)
 
 
 PROBABILITY_FLOAT_METRICS = (
@@ -105,39 +108,61 @@ def _nucleus_size(sorted_probabilities: torch.Tensor, threshold: float) -> int:
     return -size
 
 
-@torch.inference_mode()
-def compute_probability_metrics(
-    raw_logits: torch.Tensor,
-    selected_token_id: int,
-) -> ProbabilityMetrics:
-    """Compute all 31 probability metrics from the unmodified raw logits."""
+def _nucleus_sizes(
+    sorted_probabilities: torch.Tensor,
+    threshold: float,
+) -> torch.Tensor:
+    cumulative = torch.cumsum(sorted_probabilities, dim=-1)
+    crossing = cumulative >= threshold
+    first = crossing.to(dtype=torch.int64).argmax(dim=-1) + 1
+    fallback = torch.full_like(first, sorted_probabilities.shape[1])
+    return -torch.where(crossing.any(dim=-1), first, fallback)
 
-    logits = probability_logits(raw_logits, selected_token_id)
-    vocabulary_size = logits.numel()
+
+@torch.inference_mode()
+def compute_probability_metrics_batch(
+    raw_logits: torch.Tensor,
+    selected_token_ids: torch.Tensor,
+) -> tuple[ProbabilityMetrics, ...]:
+    """Compute all probability metrics for a logits microbatch."""
+
+    logits, selected = probability_logits_batch(
+        raw_logits,
+        selected_token_ids,
+    )
+    batch_size, vocabulary_size = logits.shape
     log_vocabulary_size = math.log(vocabulary_size)
 
     log_probabilities = torch.log_softmax(logits, dim=-1)
     probabilities = torch.exp(log_probabilities)
-    sorted_log_probabilities, _ = torch.sort(log_probabilities, descending=True)
+    sorted_log_probabilities, _ = torch.sort(
+        log_probabilities,
+        dim=-1,
+        descending=True,
+    )
     sorted_probabilities = torch.exp(sorted_log_probabilities)
-
-    selected_logp = log_probabilities[selected_token_id]
+    selected_logp = log_probabilities.gather(
+        1,
+        selected.unsqueeze(1),
+    ).squeeze(1)
     entropy = _xlog_from_log_probability(
-        probabilities, log_probabilities
-    ).sum()
-    gini = torch.exp(2 * log_probabilities).sum()
+        probabilities,
+        log_probabilities,
+    ).sum(dim=-1)
+    gini = torch.exp(2 * log_probabilities).sum(dim=-1)
 
     other_logits = log_probabilities.clone()
-    other_logits[selected_token_id] = -torch.inf
-    selected_dominance = selected_logp - other_logits.max()
-    competition_rank = 1 + int(
-        torch.count_nonzero(log_probabilities > selected_logp).item()
+    other_logits.scatter_(1, selected.unsqueeze(1), -torch.inf)
+    selected_dominance = selected_logp - other_logits.max(dim=-1).values
+    competition_rank = 1 + torch.count_nonzero(
+        log_probabilities > selected_logp.unsqueeze(1),
+        dim=-1,
     )
 
-    topk_mass: dict[int, torch.Tensor] = {}
-    for k in (2, 5, 10, 20):
-        topk_mass[k] = sorted_probabilities[: min(k, vocabulary_size)].sum()
-
+    topk_mass = {
+        k: sorted_probabilities[:, : min(k, vocabulary_size)].sum(dim=-1)
+        for k in (2, 5, 10, 20)
+    }
     log_uniform = -log_vocabulary_size
     log_mixture = torch.logaddexp(
         log_probabilities,
@@ -147,54 +172,79 @@ def compute_probability_metrics(
         probabilities > 0,
         probabilities * (log_probabilities - log_mixture),
         torch.zeros_like(probabilities),
-    ).sum()
-    kl_u_m = (log_uniform - log_mixture).mean()
+    ).sum(dim=-1)
+    kl_u_m = (log_uniform - log_mixture).mean(dim=-1)
     js_distance = torch.sqrt(torch.clamp(0.5 * (kl_p_m + kl_u_m), min=0))
 
     renyi_half = (
-        torch.logsumexp(0.5 * log_probabilities, dim=0) / (0.5 - 1)
+        torch.logsumexp(0.5 * log_probabilities, dim=-1) / (0.5 - 1)
     )
-    renyi_two = torch.logsumexp(2 * log_probabilities, dim=0)
-    renyi_four = torch.logsumexp(4 * log_probabilities, dim=0) / 3
+    renyi_two = torch.logsumexp(2 * log_probabilities, dim=-1)
+    renyi_four = torch.logsumexp(4 * log_probabilities, dim=-1) / 3
 
-    return ProbabilityMetrics(
-        logp=float(selected_logp.item()),
-        kl_u_p=float(
-            (-log_vocabulary_size - log_probabilities.mean()).item()
+    float_values = torch.stack(
+        (
+            selected_logp,
+            -log_vocabulary_size - log_probabilities.mean(dim=-1),
+            log_vocabulary_size + entropy,
+            gini,
+            entropy,
+            -torch.exp(-entropy),
+            torch.exp(entropy),
+            sorted_probabilities[:, 0],
+            sorted_probabilities[:, 0] - sorted_probabilities[:, 1],
+            sorted_log_probabilities[:, 0] - sorted_log_probabilities[:, 1],
+            selected_dominance,
+            -torch.log(competition_rank.to(dtype=torch.float32)),
+            topk_mass[2],
+            topk_mass[5],
+            topk_mass[10],
+            topk_mass[20],
+            topk_mass[2] - 1,
+            topk_mass[5] - 1,
+            topk_mass[10] - 1,
+            topk_mass[20] - 1,
+            1 + entropy / log_vocabulary_size,
+            renyi_half,
+            entropy,
+            renyi_two,
+            renyi_four,
+            sorted_log_probabilities[:, 0],
+            js_distance,
         ),
-        kl_p_u=float((log_vocabulary_size + entropy).item()),
-        gini=float(gini.item()),
-        entropy=float(entropy.item()),
-        dist_perplexity=float((-torch.exp(-entropy)).item()),
-        inverse_perplexity=float(torch.exp(entropy).item()),
-        max_prob=float(sorted_probabilities[0].item()),
-        margin_top2=float(
-            (sorted_probabilities[0] - sorted_probabilities[1]).item()
+        dim=1,
+    ).cpu().tolist()
+    integer_values = torch.stack(
+        (
+            -competition_rank,
+            _nucleus_sizes(sorted_probabilities, 0.90),
+            _nucleus_sizes(sorted_probabilities, 0.95),
+            _nucleus_sizes(sorted_probabilities, 0.99),
         ),
-        log_ratio_margin_top2=float(
-            (sorted_log_probabilities[0] - sorted_log_probabilities[1]).item()
-        ),
-        selected_dominance=float(selected_dominance.item()),
-        selected_logrank=-math.log(competition_rank),
-        topk_mass_2=float(topk_mass[2].item()),
-        topk_mass_5=float(topk_mass[5].item()),
-        topk_mass_10=float(topk_mass[10].item()),
-        topk_mass_20=float(topk_mass[20].item()),
-        tail_mass_2=float((topk_mass[2] - 1).item()),
-        tail_mass_5=float((topk_mass[5] - 1).item()),
-        tail_mass_10=float((topk_mass[10] - 1).item()),
-        tail_mass_20=float((topk_mass[20] - 1).item()),
-        norm_entropy_concentration=float(
-            (1 + entropy / log_vocabulary_size).item()
-        ),
-        renyi_entropy_0p5=float(renyi_half.item()),
-        renyi_entropy_1=float(entropy.item()),
-        renyi_entropy_2=float(renyi_two.item()),
-        renyi_entropy_4=float(renyi_four.item()),
-        renyi_entropy_inf=float(sorted_log_probabilities[0].item()),
-        js_p_u=float(js_distance.item()),
-        selected_rank=-competition_rank,
-        nucleus_size_0p9=_nucleus_size(sorted_probabilities, 0.90),
-        nucleus_size_0p95=_nucleus_size(sorted_probabilities, 0.95),
-        nucleus_size_0p99=_nucleus_size(sorted_probabilities, 0.99),
+        dim=1,
+    ).cpu().tolist()
+    return tuple(
+        ProbabilityMetrics(
+            *float_values[index],
+            *integer_values[index],
+        )
+        for index in range(batch_size)
     )
+
+
+@torch.inference_mode()
+def compute_probability_metrics(
+    raw_logits: torch.Tensor,
+    selected_token_id: int,
+) -> ProbabilityMetrics:
+    """Compute all 31 probability metrics from the unmodified raw logits."""
+
+    probability_logits(raw_logits, selected_token_id)
+    return compute_probability_metrics_batch(
+        raw_logits.unsqueeze(0),
+        torch.tensor(
+            [selected_token_id],
+            dtype=torch.long,
+            device=raw_logits.device,
+        ),
+    )[0]

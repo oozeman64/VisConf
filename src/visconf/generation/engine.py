@@ -11,15 +11,21 @@ from typing import Any
 import torch
 
 from visconf.generation.rollout_state import RolloutState
-from visconf.generation.sampling import sample_next_token
+from visconf.generation.sampling import sample_next_tokens
 from visconf.generation.stopping import StopReason, decide_stop
 from visconf.metrics.accumulator import AttentionScenarioAggregate
 from visconf.metrics.attention import (
     ATTENTION_METRICS,
     AttentionScenarioMetrics,
+    StepTokenGroups,
     compute_attention_metrics,
+    compute_attention_metrics_batch,
 )
-from visconf.metrics.probability import compute_probability_metrics
+from visconf.metrics.probability import (
+    ProbabilityMetrics,
+    compute_probability_metrics,
+    compute_probability_metrics_batch,
+)
 from visconf.metrics.validation import MetricInputError
 from visconf.models.instrumentation import (
     QwenInstrumentation,
@@ -27,7 +33,6 @@ from visconf.models.instrumentation import (
 )
 from visconf.models.token_positions import (
     predictor_position,
-    step_token_groups,
 )
 from visconf.types import (
     AttentionMetricRecord,
@@ -66,6 +71,43 @@ def _scenario_metrics(
     if not aggregate.valid or aggregate.vector is None:
         return _invalid_attention()
     return compute_attention_metrics(aggregate.vector, groups)
+
+
+def _scenario_metrics_batch(
+    observations: list[RowStepObservation],
+    row_indices: list[int],
+    groups_by_row: dict[int, StepTokenGroups],
+) -> dict[int, dict[str, AttentionScenarioMetrics]]:
+    results = {row_index: {} for row_index in row_indices}
+    for scenario in (
+        "all_layers_all_heads",
+        "early_visual_integration",
+        "visual_reasoning",
+    ):
+        valid_rows = [
+            row_index
+            for row_index in row_indices
+            if observations[row_index].attention[scenario].valid
+            and observations[row_index].attention[scenario].vector is not None
+        ]
+        invalid_rows = set(row_indices) - set(valid_rows)
+        for row_index in invalid_rows:
+            results[row_index][scenario] = _invalid_attention()
+        if not valid_rows:
+            continue
+        vectors = torch.stack(
+            [
+                observations[row_index].attention[scenario].vector
+                for row_index in valid_rows
+            ]
+        )
+        metrics = compute_attention_metrics_batch(
+            vectors,
+            [groups_by_row[row_index] for row_index in valid_rows],
+        )
+        for row_index, metric in zip(valid_rows, metrics, strict=True):
+            results[row_index][scenario] = metric
+    return results
 
 
 class GenerationEngine:
@@ -217,31 +259,125 @@ class GenerationEngine:
             prefill.observations.rows[0] for _ in active
         ]
         stop_token_ids = self.facade.stop_token_ids()
+        image_positions = tuple(
+            prepared.token_groups.image_positions.tolist()
+        )
+        prompt_text_positions = tuple(
+            prepared.token_groups.prompt_text_positions.tolist()
+        )
+        groups_cache: dict[int, StepTokenGroups] = {}
+
+        def groups_for(retained_before: int) -> StepTokenGroups:
+            if retained_before not in groups_cache:
+                groups_cache[retained_before] = StepTokenGroups(
+                    image_positions=image_positions,
+                    prompt_text_positions=prompt_text_positions,
+                    generated_text_positions=tuple(
+                        range(
+                            prepared.token_groups.prompt_token_count,
+                            prepared.token_groups.prompt_token_count
+                            + retained_before,
+                        )
+                    ),
+                )
+            return groups_cache[retained_before]
 
         while active:
-            selected_ids: list[int] = []
-            survivors: list[RolloutState] = []
-            survivor_indices: list[int] = []
-            for row_index, state in enumerate(active):
-                retained_before = len(state.generated_token_ids)
-                selected = sample_next_token(
-                    raw_logits[row_index],
-                    sampling,
-                    state.generator,
-                )
-                decision = decide_stop(
+            sampled_ids = sample_next_tokens(
+                raw_logits,
+                sampling,
+                tuple(state.generator for state in active),
+            )
+            decisions = [
+                decide_stop(
                     selected,
-                    retained_before,
+                    len(state.generated_token_ids),
                     self.max_new_tokens,
                     stop_token_ids,
                 )
+                for state, selected in zip(
+                    active,
+                    sampled_ids,
+                    strict=True,
+                )
+            ]
+            retained_indices = [
+                index
+                for index, decision in enumerate(decisions)
+                if decision.retain_token
+            ]
+            probability_by_row: dict[
+                int,
+                tuple[ProbabilityMetrics | None, str | None],
+            ] = {}
+            if retained_indices:
+                retained_tensor = torch.tensor(
+                    retained_indices,
+                    dtype=torch.long,
+                    device=self.facade.device,
+                )
+                selected_tensor = torch.tensor(
+                    [sampled_ids[index] for index in retained_indices],
+                    dtype=torch.long,
+                    device=self.facade.device,
+                )
+                try:
+                    batch_metrics = compute_probability_metrics_batch(
+                        raw_logits.index_select(0, retained_tensor),
+                        selected_tensor,
+                    )
+                    probability_by_row.update(
+                        {
+                            row_index: (metric, None)
+                            for row_index, metric in zip(
+                                retained_indices,
+                                batch_metrics,
+                                strict=True,
+                            )
+                        }
+                    )
+                except MetricInputError:
+                    for row_index in retained_indices:
+                        try:
+                            metric = compute_probability_metrics(
+                                raw_logits[row_index],
+                                sampled_ids[row_index],
+                            )
+                            probability_by_row[row_index] = (metric, None)
+                        except MetricInputError:
+                            probability_by_row[row_index] = (
+                                None,
+                                "invalid_probability_logits",
+                            )
+            groups_by_row = {
+                row_index: groups_for(
+                    len(active[row_index].generated_token_ids)
+                )
+                for row_index in retained_indices
+            }
+            attention_by_row = _scenario_metrics_batch(
+                observations,
+                retained_indices,
+                groups_by_row,
+            )
+
+            selected_ids: list[int] = []
+            survivors: list[RolloutState] = []
+            survivor_indices: list[int] = []
+            for row_index, (state, selected, decision) in enumerate(
+                zip(active, sampled_ids, decisions, strict=True)
+            ):
                 if decision.retain_token:
+                    probability, invalid_reason = probability_by_row[row_index]
                     self._append_token(
                         state,
                         selected,
-                        raw_logits[row_index],
+                        probability,
+                        invalid_reason,
                         observations[row_index],
                         prepared,
+                        groups_by_row[row_index],
+                        attention_by_row[row_index],
                     )
                 if decision.stop:
                     state.finish(
@@ -255,13 +391,14 @@ class GenerationEngine:
 
             if not survivors:
                 break
-            indices = torch.tensor(
-                survivor_indices,
-                dtype=torch.long,
-                device=self.facade.device,
-            )
-            cache = self.facade.select_cache_rows(cache, indices)
-            attention_mask = attention_mask.index_select(0, indices)
+            if len(survivors) != len(active):
+                indices = torch.tensor(
+                    survivor_indices,
+                    dtype=torch.long,
+                    device=self.facade.device,
+                )
+                cache = self.facade.select_cache_rows(cache, indices)
+                attention_mask = attention_mask.index_select(0, indices)
             decoded = self.facade.decode_step(
                 torch.tensor(
                     selected_ids,
@@ -298,47 +435,44 @@ class GenerationEngine:
         self,
         state: RolloutState,
         selected_token_id: int,
-        raw_logits: torch.Tensor,
+        probability: ProbabilityMetrics | None,
+        probability_invalid_reason: str | None,
         observation: RowStepObservation,
         prepared: Any,
+        groups: StepTokenGroups,
+        attention_results: dict[str, AttentionScenarioMetrics],
     ) -> None:
         retained_before = len(state.generated_token_ids)
         step = retained_before + 1
         token_key = TokenKey(state.key, step)
-        groups = step_token_groups(
-            prepared.token_groups,
-            retained_before,
-        )
-        try:
-            probability = compute_probability_metrics(
-                raw_logits,
-                selected_token_id,
-            )
+        if probability is not None:
             probability_record = ProbabilityMetricRecord(
                 key=token_key,
                 metrics_valid=True,
                 invalid_reason=None,
                 metrics=probability,
             )
-        except MetricInputError:
+        else:
             probability_record = ProbabilityMetricRecord(
                 key=token_key,
                 metrics_valid=False,
-                invalid_reason="invalid_probability_logits",
+                invalid_reason=probability_invalid_reason,
                 metrics=None,
             )
 
-        attention_results = {
-            scenario: _scenario_metrics(aggregate, groups)
-            for scenario, aggregate in observation.attention.items()
-        }
         state.generated_token_ids.append(selected_token_id)
+        token_strings = getattr(self.facade, "token_strings", None)
+        if token_strings is None:
+            token_piece = self.facade.token_piece(selected_token_id)
+            token_text = self.facade.token_text(selected_token_id)
+        else:
+            token_piece, token_text = token_strings(selected_token_id)
         state.tokens.append(
             TokenRecord(
                 key=token_key,
                 token_id=selected_token_id,
-                token_piece=self.facade.token_piece(selected_token_id),
-                token_text=self.facade.token_text(selected_token_id),
+                token_piece=token_piece,
+                token_text=token_text,
                 predictor_position=predictor_position(
                     prepared.token_groups,
                     retained_before,
@@ -415,4 +549,3 @@ class GenerationEngine:
             attention=tuple(state.attention),
             hidden_state=tuple(state.hidden_state),
         )
-

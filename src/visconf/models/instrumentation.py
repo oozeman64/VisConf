@@ -14,7 +14,7 @@ from visconf.metrics.accumulator import (
 )
 from visconf.metrics.hidden_state import (
     HiddenStateMetrics,
-    compute_layer_cosine,
+    compute_layer_cosines,
 )
 from visconf.types import TokenGroups
 
@@ -78,6 +78,17 @@ class _StepCollector:
         if attention_mask.ndim != 2 or attention_mask.shape[0] != batch_size:
             raise InstrumentationError("attention mask has an unexpected shape")
         self.attention_mask = attention_mask
+        self.valid_positions = tuple(
+            torch.nonzero(attention_mask[row] == 1, as_tuple=False).flatten()
+            for row in range(batch_size)
+        )
+        if any(positions.numel() == 0 for positions in self.valid_positions):
+            raise InstrumentationError("instrumented step has no unmasked keys")
+        self.prefill_query_index = (
+            int(self.valid_positions[0][-1].item())
+            if mode == "prefill"
+            else None
+        )
         self.layer_calls: set[int] = set()
         self.attention = [AttentionAccumulator() for _ in range(batch_size)]
         self.hidden = [HiddenStateAccumulator() for _ in range(batch_size)]
@@ -99,19 +110,18 @@ class _StepCollector:
         ):
             raise InstrumentationError("eager attention weights were not returned")
 
-        valid_positions = [
-            torch.nonzero(self.attention_mask[row] == 1, as_tuple=False)
-            .flatten()
-            .to(hidden_output.device)
-            for row in range(self.batch_size)
-        ]
-        if any(positions.numel() == 0 for positions in valid_positions):
-            raise InstrumentationError("instrumented step has no unmasked keys")
+        if self.valid_positions[0].device != hidden_output.device:
+            self.valid_positions = tuple(
+                positions.to(hidden_output.device)
+                for positions in self.valid_positions
+            )
         query_index = (
-            int(valid_positions[0][-1].item())
+            self.prefill_query_index
             if self.mode == "prefill"
             else hidden_output.shape[1] - 1
         )
+        if query_index is None:
+            raise InstrumentationError("predictor query position is unavailable")
         if (
             query_index >= hidden_output.shape[1]
             or query_index >= attention_weights.shape[-2]
@@ -124,7 +134,7 @@ class _StepCollector:
                 hidden_output.device
             )
             if logical_positions.numel():
-                positions = valid_positions[0].index_select(
+                positions = self.valid_positions[0].index_select(
                     0, logical_positions
                 )
                 image_prototype = (
@@ -144,8 +154,12 @@ class _StepCollector:
                 layer_number
             ]
 
-        for row_index in range(self.batch_size):
-            key_positions = valid_positions[row_index]
+        cosines = compute_layer_cosines(
+            hidden_output[:, query_index, :],
+            image_prototype,
+        )
+        for row_index, cosine in enumerate(cosines):
+            key_positions = self.valid_positions[row_index]
             if key_positions.numel() > attention_weights.shape[-1]:
                 raise InstrumentationError("unmasked key position is unavailable")
             selected_attention = attention_weights[
@@ -157,10 +171,6 @@ class _StepCollector:
             self.attention[row_index].add_layer(
                 layer_number,
                 selected_attention.to(dtype=torch.float32),
-            )
-            cosine = compute_layer_cosine(
-                hidden_output[row_index, query_index, :],
-                image_prototype,
             )
             self.hidden[row_index].add_layer(layer_number, cosine)
         self.layer_calls.add(layer_number)

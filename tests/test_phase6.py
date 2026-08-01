@@ -58,6 +58,7 @@ class FakeFacade:
     ) -> None:
         self.oom_above = oom_above
         self.forced_prefill_token = forced_prefill_token
+        self.select_calls = 0
 
     def prefill(self, prepared, instrumentation):
         logits = torch.zeros(6)
@@ -78,6 +79,7 @@ class FakeFacade:
         return [[] for _ in range(batch_size)]
 
     def select_cache_rows(self, cache, indices):
+        self.select_calls += 1
         return [cache[index] for index in indices.tolist()]
 
     def decode_step(
@@ -268,3 +270,24 @@ def test_oom_retries_same_rollouts_and_maximum_is_recorded():
     assert result.generation.generated_token_ids == (0,)
     assert result.generation.stop_reason == "max_new_tokens"
     assert result.generation.hit_max_new_tokens
+
+
+def test_identity_cache_compaction_is_skipped():
+    facade = FakeFacade(forced_prefill_token=1)
+    engine = GenerationEngine(
+        facade,
+        FakeInstrumentation(),
+        base_seed=1234,
+        max_new_tokens=3,
+        rollout_microbatch_size=4,
+    )
+    results = tuple(
+        engine.generate_example(
+            EXAMPLE,
+            prepared_input(),
+            rollout_keys(4),
+            SAMPLING,
+        )
+    )
+    assert len(results) == 4
+    assert facade.select_calls == 0

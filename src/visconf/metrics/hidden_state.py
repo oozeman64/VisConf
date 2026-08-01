@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -48,17 +49,34 @@ def compute_layer_cosine(
 ) -> float | None:
     """Return one normalized layer cosine, or None when it is undefined."""
 
-    if image_prototype is None:
-        return None
-    if not isinstance(predictor_hidden, torch.Tensor) or not isinstance(
-        image_prototype, torch.Tensor
-    ):
+    if not isinstance(predictor_hidden, torch.Tensor):
         raise MetricInputError("hidden states must be torch.Tensor values")
-    if (
-        predictor_hidden.ndim != 1
-        or image_prototype.ndim != 1
-        or predictor_hidden.shape != image_prototype.shape
-    ):
+    if predictor_hidden.ndim != 1:
+        raise MetricInputError(
+            "predictor hidden state and image prototype must be equal-length vectors"
+        )
+    return compute_layer_cosines(
+        predictor_hidden.unsqueeze(0),
+        image_prototype,
+    )[0]
+
+
+@torch.inference_mode()
+def compute_layer_cosines(
+    predictor_hidden: torch.Tensor,
+    image_prototype: torch.Tensor | None,
+) -> tuple[float | None, ...]:
+    """Return normalized layer cosines for a predictor microbatch."""
+
+    if not isinstance(predictor_hidden, torch.Tensor):
+        raise MetricInputError("hidden states must be torch.Tensor values")
+    if predictor_hidden.ndim != 2:
+        raise MetricInputError("predictor hidden states must have shape [batch, hidden]")
+    if image_prototype is None:
+        return (None,) * predictor_hidden.shape[0]
+    if not isinstance(image_prototype, torch.Tensor):
+        raise MetricInputError("hidden states must be torch.Tensor values")
+    if image_prototype.ndim != 1 or predictor_hidden.shape[1:] != image_prototype.shape:
         raise MetricInputError(
             "predictor hidden state and image prototype must be equal-length vectors"
         )
@@ -70,22 +88,28 @@ def compute_layer_cosine(
         device=predictor.device,
         dtype=torch.float32,
     )
-    if not torch.isfinite(predictor).all() or not torch.isfinite(prototype).all():
-        return None
-
-    predictor_norm = torch.linalg.vector_norm(predictor)
+    predictor_norm = torch.linalg.vector_norm(predictor, dim=-1)
     prototype_norm = torch.linalg.vector_norm(prototype)
-    if (
-        predictor_norm.item() < HIDDEN_NORM_EPSILON
-        or prototype_norm.item() < HIDDEN_NORM_EPSILON
-    ):
-        return None
-
-    cosine = torch.dot(predictor, prototype) / (
-        predictor_norm * prototype_norm
+    valid = (
+        torch.isfinite(predictor).all(dim=-1)
+        & torch.isfinite(prototype).all()
+        & (predictor_norm >= HIDDEN_NORM_EPSILON)
+        & (prototype_norm >= HIDDEN_NORM_EPSILON)
     )
+    denominator = (predictor_norm * prototype_norm).clamp_min(
+        HIDDEN_NORM_EPSILON
+    )
+    cosine = torch.sum(predictor * prototype.unsqueeze(0), dim=-1) / denominator
     normalized = torch.clamp((cosine + 1) / 2, min=0, max=1)
-    return float(normalized.item())
+    values = torch.where(
+        valid,
+        normalized,
+        torch.full_like(normalized, torch.nan),
+    ).cpu().tolist()
+    return tuple(
+        float(value) if math.isfinite(value) else None
+        for value in values
+    )
 
 
 @torch.inference_mode()
