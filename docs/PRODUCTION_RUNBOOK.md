@@ -192,5 +192,4 @@ target-GPU benchmark showing that the exact chosen prompt/rollout shape fits
 without fallback, improves useful retained-token throughput, and matches the
 prompt-batch-one retained-ID hash. Compare contiguous and bounded
 token-count-bucketed runs using the same prompt identities. The RTX 4090
-development profile currently selects (16,32); H100 remains prompt-batch one
-until equivalent evidence exists.
+development profile remains separate; primary A100 80 GB uses (32,32) for generation.

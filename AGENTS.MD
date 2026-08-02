@@ -401,8 +401,8 @@ window by exact prompt-token count, exact eligible image-token count, and source
 ordinal. The resolved configuration records strategy, window, and scheduler
 algorithm version. Each flattened row retains an explicit prompt row, sample ID,
 rollout key, state, logical context length, and cache-row mapping through every
-compaction. Production profiles remain at prompt_batch_size 1 until an exact
-larger shape passes target-GPU no-fallback and retained-ID validation.
+compaction. The primary A100 80 GB profile uses prompt_batch_size 32 and rollout_microbatch_size 32; exact
+configured shapes must pass target-GPU no-fallback and retained-ID validation.
 
 ## GPU and batching policy
 
