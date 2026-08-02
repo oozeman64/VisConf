@@ -253,7 +253,7 @@ experiment_group:
   base_seed: 42
 
 model: qwen2_5_vl_3b
-hardware: h100
+hardware: a100_80gb
 
 datasets:
   - mathverse
@@ -266,8 +266,8 @@ strategies:
 
 generation:
   rollouts_per_example: 32
-  prompt_batch_size: 1
-  rollout_microbatch_size: 16
+  prompt_batch_size: 32
+  rollout_microbatch_size: 32
   prompt_batching_strategy: contiguous
   prompt_bucket_window_size: null
   prompt_scheduler_algorithm_version: 1

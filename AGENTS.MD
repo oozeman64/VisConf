@@ -24,7 +24,7 @@ The initial experiment scope is:
 - Rollouts: 32 rollouts per dataset example in each run, for 64 total rollouts
   per example across the two strategy runs for a dataset.
 - Attention implementation: eager.
-- Hardware: one RunPod H100 or A100 GPU.
+- Primary hardware: one RunPod A100 80 GB GPU. H100, A100 40 GB, and RTX 4090 profiles remain available for separately planned runs.
 
 The six run manifests share an `experiment_group_id`, while every run writes to
 its own output directory and resumes independently. Keep maximum generated
@@ -412,7 +412,7 @@ larger shape passes target-GPU no-fallback and retained-ID validation.
   - RTX 4090 24 GB: use prompt_batch_size 16 with rollout_microbatch_size 32
     after validating representative prompt lengths on the target card.
   - A100 40 GB: microbatch 4-8.
-  - A100 80 GB: microbatch 8-16.
+  - A100 80 GB: prompt_batch_size 32 with rollout_microbatch_size 32; benchmark exact shapes (8,32), (32,32), (48,32), and (64,32).
   - H100 80 GB: microbatch 16, then test 32.
 - Use BF16 model weights, float32 metric reductions, `torch.inference_mode()`,
   eager attention, and one explicit CUDA device.

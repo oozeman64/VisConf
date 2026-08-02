@@ -35,7 +35,7 @@ def test_hardware_profiles_and_revisions_are_frozen(tmp_path):
 
     expected = {
         "a100_40gb": (4, (4, 8)),
-        "a100_80gb": (8, (8, 16)),
+        "a100_80gb": (32, (32,)),
         "h100": (16, (16, 32)),
         "rtx_4090": (32, (32,)),
     }
@@ -53,7 +53,7 @@ def test_hardware_profiles_and_revisions_are_frozen(tmp_path):
         experiment_group_id="exp-hardware",
         output_root=tmp_path,
     )
-    assert benchmark_candidates(plan.runs[0]) == ((1, 16), (1, 32), (2, 16))
+    assert benchmark_candidates(plan.runs[0]) == ((8, 32), (32, 32), (48, 32), (64, 32))
 
 
 def test_persistence_marker_survives_independent_verification(tmp_path):

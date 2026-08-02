@@ -5,7 +5,8 @@ default_rollout_microbatch_size: 32
 benchmark_microbatch_sizes:
 - 32
 max_rollout_microbatch_size: 32
-max_active_decode_rows: 16
+max_active_decode_rows: 2048
+benchmark_batch_shapes:
 - - 8
   - 32
 - - 32

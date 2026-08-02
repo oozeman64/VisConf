@@ -126,4 +126,4 @@ schedulers are contiguous and bounded token_count_bucketed. The latter uses
 exact prompt-token and eligible image-pad counts with canonical source ordinal
 as its deterministic tie-breaker. Output identities, per-example shards,
 checkpoint-last publication, metric keys, and rollout seeds are unchanged.
-Frozen production configurations intentionally keep prompt_batch_size at 1.
+The primary frozen production configuration uses the A100 80 GB profile with prompt_batch_size 32 and rollout_microbatch_size 32.

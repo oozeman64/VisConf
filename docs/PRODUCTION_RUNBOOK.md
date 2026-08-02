@@ -1,8 +1,8 @@
 # Production runbook
 
 The initial production matrix is frozen by the files under `configs/`. The
-selected group uses H100 80 GB, 32 rollouts per example, a default rollout
-microbatch of 16, and a maximum of 1024 retained tokens. Dataset and local model
+selected group uses A100 80 GB, 32 rollouts per example, prompt_batch_size 32,
+rollout_microbatch_size 32, and a maximum of 1024 retained tokens. Dataset and local model
 artifact revisions are explicit strings in their fragment files.
 
 Do not copy benchmark numbers from another GPU. The benchmark command verifies
@@ -62,12 +62,12 @@ with the Pod.
 
 The RTX 4090 development profile uses prompt_batch_size 16 and
 rollout_microbatch_size 32. Validate representative prompt lengths before
-long runs; the frozen production group remains H100 by default.
+long runs; the primary production group remains A100 80 GB by default.
 
 `configs/experiment_group_4090_full_mb32.yaml` is the separately validated
 local full-run profile. It uses 32 rollouts, microbatch 32, a 1,024-token limit,
 and writes beneath `VisConf/outputs/`. Validate representative prompt lengths
-before long runs; the frozen H100 production selection remains separate.
+before long runs; the primary A100 80 GB production selection remains separate.
 
 ## 1. Recreate the locked environment
 
