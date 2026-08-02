@@ -60,15 +60,14 @@ Use a network volume when you expect to terminate and rent different Pods.
 A Pod volume disk survives stop/start only while that Pod exists; it is deleted
 with the Pod.
 
-The RTX 4090 development profile uses a default microbatch of 2 and benchmarks
-1, 2, and 4. It is intended for local and low-cost acceptance runs; the frozen
-production group remains H100 by default.
+The RTX 4090 development profile uses prompt_batch_size 16 and
+rollout_microbatch_size 32. Validate representative prompt lengths before
+long runs; the frozen production group remains H100 by default.
 
 `configs/experiment_group_4090_full_mb32.yaml` is the separately validated
 local full-run profile. It uses 32 rollouts, microbatch 32, a 1,024-token limit,
-and writes beneath `VisConf/outputs/`. It does not replace the conservative
-profile for unknown prompt shapes and does not change the frozen H100 production
-selection.
+and writes beneath `VisConf/outputs/`. Validate representative prompt lengths
+before long runs; the frozen H100 production selection remains separate.
 
 ## 1. Recreate the locked environment
 
@@ -119,10 +118,11 @@ scripts/benchmark_hardware.sh \
   /workspace/visconf-output
 ~~~
 
-The selected H100 profile measures microbatches 16 and 32. The A100 40 GB and
-80 GB profiles measure 4/8 and 8/16 respectively. Each report records prompt
-time, decode time, total time, peak allocated memory, retained-token throughput,
-OOM fallback count, environment details, and a retained-ID hash.
+The selected hardware profile measures explicit prompt/rollout batch shapes,
+including a prompt-batch-one baseline and measured multi-prompt candidates where
+configured. Each report records prompt time, decode time, total time, peak
+allocated memory, retained-token throughput, OOM fallback count, environment
+details, and a retained-ID hash.
 
 For a runner-backed local RTX 4090 check that also commits the complete output
 transaction, use:
@@ -143,9 +143,10 @@ examples and generation Parquet files, atomic core-table shards, a checkpoint,
 and updated manifests; it is therefore suitable for end-to-end regression
 comparison, unlike a timing-only hardware probe.
 
-A production default is accepted only when every configured candidate completes
-and retained-ID hashes agree. If the larger candidate OOMs, lower the hardware
-profile limit and re-plan; do not silently change an existing resolved run.
+A production default is accepted only when every configured exact batch shape
+completes without fallback and retained-ID hashes agree. If the larger candidate
+OOMs, lower the hardware profile limit and re-plan; do not silently change an
+existing resolved run.
 
 ## 5. Run acceptance and interrupted-resume rehearsal
 
@@ -185,3 +186,11 @@ scripts/run_single_run.sh \
 
 Or run incomplete cells sequentially with `visconf group`. Reusing the same
 group and run IDs resumes exclusively from checkpoint-committed rollout keys.
+
+For any frozen production prompt-batch shape, require a representative
+target-GPU benchmark showing that the exact chosen prompt/rollout shape fits
+without fallback, improves useful retained-token throughput, and matches the
+prompt-batch-one retained-ID hash. Compare contiguous and bounded
+token-count-bucketed runs using the same prompt identities. The RTX 4090
+development profile currently selects (16,32); H100 remains prompt-batch one
+until equivalent evidence exists.

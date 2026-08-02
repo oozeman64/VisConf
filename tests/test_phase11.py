@@ -37,7 +37,7 @@ def test_hardware_profiles_and_revisions_are_frozen(tmp_path):
         "a100_40gb": (4, (4, 8)),
         "a100_80gb": (8, (8, 16)),
         "h100": (16, (16, 32)),
-        "rtx_4090": (2, (1, 2, 4)),
+        "rtx_4090": (32, (32,)),
     }
     for name, (default, candidates) in expected.items():
         raw = yaml.safe_load(
@@ -53,7 +53,7 @@ def test_hardware_profiles_and_revisions_are_frozen(tmp_path):
         experiment_group_id="exp-hardware",
         output_root=tmp_path,
     )
-    assert benchmark_candidates(plan.runs[0]) == (16, 32)
+    assert benchmark_candidates(plan.runs[0]) == ((1, 16), (1, 32), (2, 16))
 
 
 def test_persistence_marker_survives_independent_verification(tmp_path):

@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 from visconf.generation.rollout_state import RolloutState
+from visconf.generation.scheduler import prompt_batch_telemetry
 from visconf.generation.sampling import sample_next_tokens_prepared
 from visconf.generation.stopping import StopReason, decide_stop
 from visconf.metrics.accumulator import AttentionScenarioAggregate
@@ -38,10 +41,12 @@ from visconf.models.token_positions import (
 from visconf.types import (
     AttentionMetricRecord,
     CompletedRollout,
+    DecodeRowMapping,
     Example,
     GenerationRecord,
     HiddenStateMetricRecord,
     ProbabilityMetricRecord,
+    PromptBatchWorkItem,
     RolloutKey,
     SamplingConfig,
     TokenKey,
@@ -79,36 +84,46 @@ def _scenario_metrics_batch(
     row_indices: list[int],
     groups_by_row: dict[int, StepTokenGroups],
 ) -> dict[int, dict[str, AttentionScenarioMetrics]]:
+    """Pad ragged logical vectors with excluded zeros and transfer once."""
     results = {row_index: {} for row_index in row_indices}
     for scenario in (
         "all_layers_all_heads",
         "early_visual_integration",
         "visual_reasoning",
     ):
-        valid_rows = [
-            row_index
-            for row_index in row_indices
-            if observations[row_index].attention[scenario].valid
-            and observations[row_index].attention[scenario].vector is not None
-        ]
-        invalid_rows = set(row_indices) - set(valid_rows)
-        for row_index in invalid_rows:
-            results[row_index][scenario] = _invalid_attention()
-        if not valid_rows:
-            continue
-        vectors = torch.stack(
-            [
-                observations[row_index].attention[scenario].vector
-                for row_index in valid_rows
+        compatible_rows = []
+        for row_index in row_indices:
+            aggregate = observations[row_index].attention[scenario]
+            if not aggregate.valid or aggregate.vector is None:
+                results[row_index][scenario] = _invalid_attention()
+                continue
+            compatible_rows.append(row_index)
+        if compatible_rows:
+            row_vectors = [
+                observations[row].attention[scenario].vector
+                for row in compatible_rows
             ]
-        )
-        metrics = compute_attention_metrics_batch(
-            vectors,
-            [groups_by_row[row_index] for row_index in valid_rows],
-        )
-        for row_index, metric in zip(valid_rows, metrics, strict=True):
-            results[row_index][scenario] = metric
+            if any(vector is None for vector in row_vectors):
+                raise GenerationError("valid attention row has no vector")
+            vectors_present = [
+                vector for vector in row_vectors if vector is not None
+            ]
+            widths = {int(vector.numel()) for vector in vectors_present}
+            vectors = torch.stack(
+                vectors_present
+            ) if len(widths) == 1 else pad_sequence(
+                vectors_present,
+                batch_first=True,
+                padding_value=0.0,
+            )
+            metrics = compute_attention_metrics_batch(
+                vectors,
+                [groups_by_row[row] for row in compatible_rows],
+            )
+            for row, metric in zip(compatible_rows, metrics, strict=True):
+                results[row][scenario] = metric
     return results
+
 
 
 class GenerationEngine:
@@ -191,6 +206,327 @@ class GenerationEngine:
             )
             yield from completed
             offset += batch_size
+
+    def generate_prompt_batch(
+        self,
+        work_items: Sequence[PromptBatchWorkItem],
+        sampling: SamplingConfig,
+    ) -> tuple[CompletedRollout, ...]:
+        """Prefill independent prompts once and decode their rollout rows together."""
+        items = tuple(work_items)
+        if not items:
+            return ()
+        for item in items:
+            self._validate_keys(item.example, item.pending_rollout_keys, sampling)
+        if (
+            len(items) == 1
+            and hasattr(self.facade, "prefill")
+            and hasattr(self.facade, "repeat_cache")
+        ):
+            item = items[0]
+            return tuple(
+                self.generate_example(
+                    item.example,
+                    item.prepared,
+                    item.pending_rollout_keys,
+                    sampling,
+                )
+            )
+        try:
+            prepared_batch = self.facade.prepare_batch(
+                tuple(item.prepared for item in items)
+            )
+            prefill = self.facade.prefill_batch(
+                prepared_batch,
+                self.instrumentation,
+            )
+        except torch.cuda.OutOfMemoryError:
+            self.instrumentation.cancel_step()
+            if len(items) == 1:
+                raise
+            midpoint = max(1, len(items) // 2)
+            torch.cuda.empty_cache()
+            return (
+                *self.generate_prompt_batch(items[:midpoint], sampling),
+                *self.generate_prompt_batch(items[midpoint:], sampling),
+            )
+
+        offsets = [0] * len(items)
+        completed: list[CompletedRollout] = []
+        effective_rollouts = self.rollout_microbatch_size
+        while any(
+            offsets[row] < len(item.pending_rollout_keys)
+            for row, item in enumerate(items)
+        ):
+            mappings: list[DecodeRowMapping] = []
+            for prompt_row, item in enumerate(items):
+                keys = item.pending_rollout_keys[
+                    offsets[prompt_row] :
+                    offsets[prompt_row] + effective_rollouts
+                ]
+                for key in keys:
+                    state = self._new_state(key)
+                    mappings.append(
+                        DecodeRowMapping(
+                            model_row=len(mappings),
+                            prompt_row=prompt_row,
+                            sample_id=item.sample_id,
+                            rollout_key=key,
+                            rollout_state=state,
+                        )
+                    )
+            telemetry = prompt_batch_telemetry(
+                items,
+                self.rollout_microbatch_size,
+                max(
+                    (
+                        sum(
+                            mapping.prompt_row == row
+                            for mapping in mappings
+                        )
+                        for row in range(len(items))
+                    ),
+                    default=0,
+                ),
+            )
+            log_event(
+                logger,
+                "prompt_batch_started",
+                **asdict(telemetry),
+                requested_prompt_count=len(items),
+                total_active_rows=len(mappings),
+            )
+            try:
+                wave = self._generate_prompt_rows(
+                    items,
+                    mappings,
+                    prefill,
+                    sampling,
+                )
+            except torch.cuda.OutOfMemoryError:
+                self.instrumentation.cancel_step()
+                if effective_rollouts == 1:
+                    raise
+                effective_rollouts = max(1, effective_rollouts // 2)
+                torch.cuda.empty_cache()
+                log_event(
+                    logger,
+                    "oom_fallback",
+                    requested_prompt_count=len(items),
+                    effective_prompt_count=len(items),
+                    requested_rollout_rows_per_prompt=self.rollout_microbatch_size,
+                    effective_rollout_rows_per_prompt=effective_rollouts,
+                    total_active_rows=len(mappings),
+                )
+                continue
+            completed.extend(wave)
+            counts = [0] * len(items)
+            for mapping in mappings:
+                counts[mapping.prompt_row] += 1
+            offsets = [
+                offset + count
+                for offset, count in zip(offsets, counts, strict=True)
+            ]
+        completed.sort(
+            key=lambda bundle: (
+                next(
+                    item.canonical_source_ordinal
+                    for item in items
+                    if item.sample_id == bundle.generation.key.sample_id
+                ),
+                bundle.generation.key.rollout_index,
+            )
+        )
+        return tuple(completed)
+
+    def _generate_prompt_rows(
+        self,
+        items: tuple[PromptBatchWorkItem, ...],
+        mappings: list[DecodeRowMapping],
+        prefill: Any,
+        sampling: SamplingConfig,
+    ) -> tuple[CompletedRollout, ...]:
+        started = time.perf_counter()
+        active = list(mappings)
+        source_indices = torch.tensor(
+            [row.prompt_row for row in active],
+            dtype=torch.long,
+            device=self.facade.device,
+        )
+        cache = self.facade.select_cache_sources(prefill.cache, source_indices)
+        attention_mask = prefill.attention_mask.index_select(0, source_indices)
+        raw_logits = prefill.raw_logits.index_select(0, source_indices)
+        observations = [
+            prefill.observations.rows[row.prompt_row] for row in active
+        ]
+        rope_deltas = (
+            prefill.rope_deltas.index_select(0, source_indices)
+            if prefill.rope_deltas.ndim > 0
+            and prefill.rope_deltas.shape[0] == len(items)
+            else prefill.rope_deltas
+        )
+        logical_lengths = prefill.logical_context_lengths.index_select(
+            0, source_indices
+        )
+        stop_token_ids = self.facade.stop_token_ids()
+        prompt_groups = tuple(item.token_groups for item in items)
+        groups_cache: dict[tuple[int, int], StepTokenGroups] = {}
+
+        def groups_for(prompt_row: int, retained_before: int) -> StepTokenGroups:
+            key = (prompt_row, retained_before)
+            if key not in groups_cache:
+                token_groups = items[prompt_row].token_groups
+                groups_cache[key] = StepTokenGroups(
+                    image_positions=tuple(token_groups.image_positions.tolist()),
+                    prompt_text_positions=tuple(
+                        token_groups.prompt_text_positions.tolist()
+                    ),
+                    generated_text_positions=tuple(
+                        range(
+                            token_groups.prompt_token_count,
+                            token_groups.prompt_token_count + retained_before,
+                        )
+                    ),
+                )
+            return groups_cache[key]
+
+        while active:
+            workspace = prepare_probability_batch(raw_logits)
+            states = [row.rollout_state for row in active]
+            sampled_ids = sample_next_tokens_prepared(
+                workspace.logits,
+                workspace.sorted_indices,
+                sampling,
+                tuple(state.generator for state in states),
+            )
+            decisions = [
+                decide_stop(
+                    selected,
+                    len(state.generated_token_ids),
+                    self.max_new_tokens,
+                    stop_token_ids,
+                )
+                for state, selected in zip(states, sampled_ids, strict=True)
+            ]
+            retained_indices = [
+                index for index, decision in enumerate(decisions)
+                if decision.retain_token
+            ]
+            probability_by_row: dict[
+                int, tuple[ProbabilityMetrics | None, str | None]
+            ] = {}
+            if retained_indices:
+                retained_tensor = torch.tensor(
+                    retained_indices, dtype=torch.long, device=self.facade.device
+                )
+                selected_tensor = torch.tensor(
+                    [sampled_ids[index] for index in retained_indices],
+                    dtype=torch.long,
+                    device=self.facade.device,
+                )
+                try:
+                    values = compute_probability_metrics_from_workspace(
+                        workspace, selected_tensor, retained_tensor
+                    )
+                    probability_by_row.update({
+                        row: (metric, None)
+                        for row, metric in zip(retained_indices, values, strict=True)
+                    })
+                except MetricInputError:
+                    for row in retained_indices:
+                        try:
+                            probability_by_row[row] = (
+                                compute_probability_metrics(
+                                    raw_logits[row], sampled_ids[row]
+                                ),
+                                None,
+                            )
+                        except MetricInputError:
+                            probability_by_row[row] = (
+                                None, "invalid_probability_logits"
+                            )
+            groups_by_row = {
+                row: groups_for(
+                    active[row].prompt_row,
+                    len(active[row].rollout_state.generated_token_ids),
+                )
+                for row in retained_indices
+            }
+            attention_by_row = _scenario_metrics_batch(
+                observations, retained_indices, groups_by_row
+            )
+            selected_ids: list[int] = []
+            survivors: list[DecodeRowMapping] = []
+            survivor_indices: list[int] = []
+            for row_index, (mapping, selected, decision) in enumerate(
+                zip(active, sampled_ids, decisions, strict=True)
+            ):
+                state = mapping.rollout_state
+                if decision.retain_token:
+                    probability, invalid_reason = probability_by_row[row_index]
+                    self._append_token(
+                        state,
+                        selected,
+                        probability,
+                        invalid_reason,
+                        observations[row_index],
+                        items[mapping.prompt_row].prepared,
+                        groups_by_row[row_index],
+                        attention_by_row[row_index],
+                    )
+                if decision.stop:
+                    state.finish(decision.reason, decision.terminating_token_id)
+                else:
+                    mapping.model_row = len(survivors)
+                    selected_ids.append(selected)
+                    survivors.append(mapping)
+                    survivor_indices.append(row_index)
+            if not survivors:
+                break
+            if len(survivors) != len(active):
+                indices = torch.tensor(
+                    survivor_indices, dtype=torch.long, device=self.facade.device
+                )
+                cache = self.facade.select_cache_rows(cache, indices)
+                attention_mask = attention_mask.index_select(0, indices)
+                rope_deltas = (
+                    rope_deltas.index_select(0, indices)
+                    if rope_deltas.ndim > 0
+                    and rope_deltas.shape[0] == len(active)
+                    else rope_deltas
+                )
+                logical_lengths = logical_lengths.index_select(0, indices)
+            source_mapping = tuple(row.prompt_row for row in survivors)
+            decoded = self.facade.decode_step(
+                torch.tensor(selected_ids, dtype=torch.long, device=self.facade.device),
+                cache,
+                attention_mask,
+                rope_deltas,
+                prompt_groups,
+                self.instrumentation,
+                source_prompt_indices=source_mapping,
+                logical_context_lengths=logical_lengths,
+            )
+            active = survivors
+            cache = decoded.cache
+            attention_mask = decoded.attention_mask
+            raw_logits = decoded.raw_logits
+            observations = list(decoded.observations.rows)
+            logical_lengths = logical_lengths + 1
+
+        elapsed = time.perf_counter() - started
+        attributed = elapsed / len(mappings)
+        completed_at = datetime.now(timezone.utc)
+        return tuple(
+            self._completed_rollout(
+                mapping.rollout_state,
+                sampling,
+                items[mapping.prompt_row].prepared,
+                attributed,
+                completed_at,
+            )
+            for mapping in mappings
+        )
 
     def _validate_keys(
         self,

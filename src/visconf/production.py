@@ -315,64 +315,78 @@ def validate_production_readiness(
     ):
         raise ProductionValidationError("benchmark measurements are malformed")
     requested = [
-        value.get("requested_microbatch_size")
+        (
+            value.get("requested_prompt_batch_size"),
+            value.get("requested_rollout_microbatch_size"),
+        )
         for value in raw_measurements
     ]
     if (
         any(
-            isinstance(value, bool) or not isinstance(value, int)
-            for value in requested
+            type(prompt) is not int or type(rollout) is not int
+            for prompt, rollout in requested
         )
         or len(requested) != len(set(requested))
-        or set(requested) != set(hardware.benchmark_microbatch_sizes)
+        or set(requested) != set(hardware.benchmark_batch_shapes)
     ):
         raise ProductionValidationError(
-            "benchmark candidates are duplicated, missing, or unexpected"
+            "benchmark batch shapes are duplicated, missing, or unexpected"
         )
     measurements = {
-        value["requested_microbatch_size"]: value
+        (
+            value["requested_prompt_batch_size"],
+            value["requested_rollout_microbatch_size"],
+        ): value
         for value in raw_measurements
     }
-    expected_rollout_count = max(hardware.benchmark_microbatch_sizes)
-    if any(
-        measurements[size].get("status") != "complete"
-        or type(measurements[size].get("rollout_count")) is not int
-        or measurements[size]["rollout_count"] != expected_rollout_count
-        or type(measurements[size].get("oom_fallbacks")) is not int
-        or measurements[size]["oom_fallbacks"] != 0
-        or type(measurements[size].get("retained_tokens")) is not int
-        or measurements[size]["retained_tokens"] < 0
-        or measurements[size]["retained_tokens"]
-        > expected_rollout_count * benchmarked_run.generation.max_new_tokens
-        or isinstance(measurements[size].get("tokens_per_second"), bool)
-        or not isinstance(
-            measurements[size].get("tokens_per_second"),
-            (int, float),
+    chosen_shape = (
+        benchmarked_run.generation.prompt_batch_size,
+        benchmarked_run.generation.rollout_microbatch_size,
+    )
+    if chosen_shape not in measurements:
+        raise ProductionValidationError(
+            "benchmark does not contain the exact configured production shape"
         )
-        or measurements[size]["tokens_per_second"] < 0
+    expected_rollout_count = max(
+        rollout for _, rollout in hardware.benchmark_batch_shapes
+    )
+    if any(
+        measurements[shape].get("status") != "complete"
+        or measurements[shape].get("effective_prompt_batch_size") != shape[0]
+        or measurements[shape].get("effective_rollout_microbatch_size") != shape[1]
+        or measurements[shape].get("maximum_active_decode_rows")
+        != shape[0] * shape[1]
+        or type(measurements[shape].get("rollout_count")) is not int
+        or measurements[shape]["rollout_count"] != expected_rollout_count
+        or type(measurements[shape].get("oom_fallbacks")) is not int
+        or measurements[shape]["oom_fallbacks"] != 0
+        or type(measurements[shape].get("retained_tokens")) is not int
+        or measurements[shape]["retained_tokens"] < 0
+        or isinstance(measurements[shape].get("tokens_per_second"), bool)
+        or not isinstance(measurements[shape].get("tokens_per_second"), (int, float))
+        or measurements[shape]["tokens_per_second"] < 0
         or any(
-            not isinstance(measurements[size].get(field), (int, float))
-            or measurements[size][field] < 0
+            not isinstance(measurements[shape].get(field), (int, float))
+            or measurements[shape][field] < 0
             for field in (
-                "prompt_seconds",
-                "decode_seconds",
-                "total_seconds",
-                "peak_allocated_bytes",
+                "prompt_seconds", "decode_seconds", "total_seconds",
+                "peak_allocated_bytes", "padding_fraction",
             )
         )
-        or measurements[size]["total_seconds"]
+        or not 0 <= measurements[shape]["padding_fraction"] < 1
+        or measurements[shape]["total_seconds"]
         < max(
-            measurements[size]["prompt_seconds"],
-            measurements[size]["decode_seconds"],
+            measurements[shape]["prompt_seconds"],
+            measurements[shape]["decode_seconds"],
         )
-        for size in hardware.benchmark_microbatch_sizes
+        for shape in hardware.benchmark_batch_shapes
     ):
         raise ProductionValidationError(
-            "every hardware candidate must complete a well-formed full benchmark"
+            "every hardware batch shape must complete without fallback"
         )
     retained_hash_values = [
-        measurements[size].get("retained_ids_sha256")
-        for size in hardware.benchmark_microbatch_sizes
+        measurements[shape].get("retained_ids_sha256")
+        for shape in hardware.benchmark_batch_shapes
     ]
     if (
         any(not isinstance(value, str) for value in retained_hash_values)
@@ -385,7 +399,7 @@ def validate_production_readiness(
         )
     ):
         raise ProductionValidationError(
-            "benchmark candidates produced different retained IDs"
+            "benchmark batch shapes produced different retained IDs"
         )
 
     marker = verify_persistence_marker(

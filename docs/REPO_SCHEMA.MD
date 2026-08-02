@@ -74,14 +74,13 @@ range.
 - Keep model integration, pure metrics, datasets, scoring, and storage isolated.
 - Support atomic multi-table output and reliable resume.
 - Support online or offline versioned scoring without rewriting generation data.
-- Run on one explicit A100 or H100 CUDA device without CPU offload.
+- Run on one explicit CUDA device (RTX 4090, A100, or H100 profiles) without CPU offload.
 
 ## Non-goals for the initial implementation
 
 - Training or fine-tuning.
 - Quantization, `torch.compile`, distributed inference, or multi-GPU sharding.
 - Automatic device maps or CPU offload.
-- Cross-example batching.
 - General support for arbitrary vision-language model families.
 - Persisting per-head or per-layer attention tensors.
 - Persisting individual per-layer hidden cosine values.
@@ -136,6 +135,7 @@ VisConf/
 |-- configs/
 |   |-- experiment_group.yaml
 |   |-- experiment_group_4090.yaml
+|   |-- experiment_group_4090_full_mb32.yaml
 |   |-- model/
 |   |   `-- qwen2_5_vl_3b.yaml
 |   |-- datasets/
@@ -175,6 +175,7 @@ VisConf/
 |   |   |-- engine.py
 |   |   |-- sampling.py
 |   |   |-- rollout_state.py
+|   |   |-- scheduler.py
 |   |   `-- stopping.py
 |   |-- models/
 |   |   |-- __init__.py
@@ -222,10 +223,13 @@ VisConf/
 |   |-- test_phase8.py
 |   |-- test_phase9.py
 |   |-- test_phase10.py
-|   `-- test_phase11.py
+|   |-- test_phase11.py
+|   `-- test_prompt_batching.py
 `-- scripts/
     |-- benchmark_hardware.sh
+    |-- run_efficiency_benchmark.sh
     |-- run_experiment_group.sh
+    |-- run_full_output_benchmark.py
     |-- run_real_generation_smoke.py
     |-- run_resume_rehearsal.sh
     |-- run_single_run.sh
@@ -262,7 +266,11 @@ strategies:
 
 generation:
   rollouts_per_example: 32
+  prompt_batch_size: 1
   rollout_microbatch_size: 16
+  prompt_batching_strategy: contiguous
+  prompt_bucket_window_size: null
+  prompt_scheduler_algorithm_version: 1
   max_new_tokens: 1024
 
 scoring:
@@ -306,9 +314,14 @@ containing multiple datasets or strategies.
 - Top-p must be in `(0, 1]`.
 - Top-k, when present, must be positive.
 - Repetition penalty must equal 1.0 for the initial experiment.
-- Rollouts per example and microbatch size must be positive.
-- Microbatch size may exceed neither rollouts per example nor configured hardware
-  limits without an explicit override.
+- Rollouts per example, prompt batch size, and rollout microbatch size must be
+  positive.
+- prompt_batching_strategy is contiguous or token_count_bucketed.
+- prompt_bucket_window_size is null for contiguous scheduling and is at least
+  prompt_batch_size for token-count bucketing.
+- rollout_microbatch_size is checked against its per-prompt hardware limit.
+  prompt_batch_size * rollout_microbatch_size is checked independently against
+  max_active_decode_rows; neither limit is silently reinterpreted.
 - Model configuration must report 36 decoder layers.
 - Attention implementation must be `eager`.
 - Automatic CPU offload and quantization must be disabled.
@@ -414,6 +427,35 @@ class TokenGroups:
 `TokenGroups` stores prompt-static `I` and `P`. The generation engine derives
 `G_t` from retained token count at each step. Position tensors use logical
 unpadded prompt coordinates.
+
+Prompt-batch work uses explicit typed records:
+
+~~~python
+@dataclass(frozen=True)
+class PromptBatchWorkItem:
+    example: Example
+    sample_id: str
+    canonical_source_ordinal: int
+    prompt_record: PromptRecord
+    token_groups: TokenGroups
+    image_token_count: int
+    pending_rollout_keys: tuple[RolloutKey, ...]
+    prepared: object
+    messages: tuple[dict[str, object], ...]
+
+@dataclass
+class DecodeRowMapping:
+    model_row: int
+    prompt_row: int
+    sample_id: str
+    rollout_key: RolloutKey
+    rollout_state: RolloutState
+~~~
+
+`PromptBatchTelemetry` records prompt count, min/max logical prompt length,
+unpadded and padded prompt totals, padding fraction, image-token range, and
+configured/effective rollout rows. The mapping is updated after every cache
+selection and active-row compaction.
 
 ### Output records
 
@@ -547,12 +589,15 @@ details. It owns:
 - Enforcing BF16, eager attention, evaluation mode, one explicit CUDA device, and
   no automatic offload.
 - Applying the chat template and `qwen_vl_utils.process_vision_info`.
-- Producing prompt tensors and a serializable `PromptRecord`.
+- Producing independently rendered prompt tensors and serializable
+  `PromptRecord` values.
+- Preparing padded prompt batches with unequal logical lengths and prefilling
+  them once through `prefill_batch()`.
 - Calling and validating `prepare_inputs_for_generation()`.
 - Managing Qwen multimodal position IDs, cache positions, rope deltas, and image
   inputs.
 - Locating all 36 language decoder layers.
-- Cloning and batch-repeating a batch-size-one prompt KV cache.
+- Selecting or repeating arbitrary source rows from a padded prompt-batch KV cache using explicit source indices.
 - Converting model output into raw next-token logits and cache state.
 - Discovering tokenizer IDs and token pieces.
 
@@ -623,7 +668,7 @@ For each layer call, instrumentation:
    per-row valid-layer sums and counts.
 9. Drops references to full attention and temporary hidden tensors.
 
-On the batch-size-one prompt prefill it additionally captures each layer's image
+On prompt-batch prefill it additionally captures each layer's row-specific image
 token states, mean-pools the image prototype in float32, and retains only the
 prototype after reduction.
 
@@ -632,7 +677,7 @@ collector. It does not write records, sample tokens, or own rollout RNG.
 
 ### Instrumentation state
 
-Instrumentation state is scoped to one prepared example and one active forward
+Instrumentation state is scoped to one bounded prompt scheduling unit and one active forward
 pass. It is never module-global. A collector must be reset before every prefill
 or decode step and must verify that all 36 expected layer calls occurred.
 
@@ -773,66 +818,78 @@ deduplication. In the current checkpoint both names resolve to ID 151645.
   Finished rows are removed from the active microbatch.
 
 ## Generation engine contract
-
-`generation/engine.py` executes rollouts for one prepared example and one
-sampling strategy:
+`generation/engine.py` supports compatibility generation for one prepared
+example and prompt-batched generation for a scheduling unit:
 
 ~~~python
 class GenerationEngine:
-    def generate_example(
+    def generate_example(...): ...
+    def generate_prompt_batch(
         self,
-        example: Example,
-        prepared: PreparedQwenPrompt,
-        rollout_keys: Sequence[RolloutKey],
+        unit: Sequence[PromptBatchWorkItem],
         sampling: SamplingConfig,
     ) -> Iterable[CompletedRollout]: ...
 ~~~
 
-All rollout keys must share run ID, dataset, split, sample ID, and strategy. Only
-rollout index and seed may vary.
+A prompt-batch unit contains independently identified examples. Each prompt may
+have a different logical context length, image-token layout, and pending rollout
+set. `generate_example()` remains a compatibility wrapper for prompt-batch size
+one. The engine yields completed rollouts and never writes Parquet.
 
-### Prompt prefill
+### Prompt scheduling and prefill
 
-For each example and run:
+The runner removes checkpoint-completed rollout identities before scheduling.
+`contiguous` preserves canonical examples.parquet/source order. For
+`token_count_bucketed`, a bounded stable window is prepared and sorted by exact
+prompt-token count, exact eligible `<|image_pad|>` count, then canonical source
+ordinal. The scheduler forms adjacent groups of at most `prompt_batch_size`.
 
-1. Reset instrumentation for a batch-size-one prompt pass.
-2. Run the full multimodal prompt once with cache enabled.
-3. Capture raw logits predicting `y_1`.
-4. Capture predictor-aligned attention and hidden observations for `q_1`.
-5. Capture all 36 float32 image prototypes.
-6. Retain a batch-size-one base KV cache.
-7. Release pixel values, full prompt attention tensors, and image-token hidden
-   matrices.
+For each scheduling unit the engine:
 
-The base prompt cache and prototypes live only until all 32 rollouts for that
-example are complete.
+1. Prefills all prompts once through the facade's batched multimodal path.
+2. Preserves each prompt's unpadded IDs, logical context length, token groups,
+   image prototypes, raw first-token logits, and reduced observations.
+3. Selects or repeats base-cache rows according to explicit source indices for
+   the pending rollout chunk; prompts need not have equal rollout counts.
+4. Replicates each prompt's first-token outputs to its own rollout rows.
 
-### Rollout microbatches
+Padding is computational only. Physical padded cache width is kept separate from
+logical prompt lengths and never enters token groups or metric counts.
 
-Pending rollout indices are processed in configured microbatches. For each
-microbatch:
+### Flattened rollout rows
 
-1. Create one independently seeded `RolloutState` per rollout.
-2. Clone and batch-repeat the immutable base KV cache.
-3. Replicate the `y_1` raw logits, attention, and hidden observations as
-   read-only inputs for each rollout.
-4. Validate the raw-logit microbatch once and prepare one descending vocabulary
-   ordering shared by selection and probability metrics.
-5. Apply sampling transforms to a copy and sample each dense row separately
-   with its own generator.
-6. Complete selected-token probability metrics from the prepared raw-logit
-   workspace using the sampled ID.
-7. Trim selected stop tokens without writing token-family rows.
-8. For retained tokens, create one token row and all three family rows.
-9. If maximum length is reached, finish after storing the retained token.
-10. Select surviving cache rows in the same order as surviving rollout states.
-11. Feed retained selected tokens through the cache to obtain observations
-    predicting the next token.
-12. Repeat until no active rows remain.
+The flattened decode state has one explicit `DecodeRowMapping` per model row:
 
-The engine yields completed rollouts; it does not write Parquet.
+~~~text
+model row -> prompt row -> sample_id -> RolloutKey -> RolloutState
+~~~
 
-### Predictor alignment
+Every decode step keeps this mapping aligned with KV-cache rows, selected token
+rows, attention masks, logical context lengths, cache positions, position IDs,
+Qwen rope deltas, prompt groups, image prototypes, observations, and generators.
+When rows finish, the same survivor indices compact all row-aligned state.
+
+For each active row:
+
+1. Create or restore one independently seeded `RolloutState`.
+2. Validate raw-logit rows once and share descending vocabulary order between
+   selection and probability metrics.
+3. Apply temperature, top-k, and top-p to a copy; call `torch.multinomial`
+   once for that rollout generator and retain dense probabilities in vocabulary
+   order.
+4. Complete probability, attention, and hidden observations for the predictor
+   distribution, trimming stop tokens without writing token-family rows.
+5. Feed retained tokens through the cache with Qwen's
+   `prepare_inputs_for_generation()` handling to obtain the next predictor rows.
+6. Compact surviving rows and repeat until every rollout stops or reaches
+   `max_new_tokens`.
+
+OOM recovery cancels instrumentation, discards partial records and advanced
+generators, recreates stable seeds, and retries the same identities from prefill
+with a smaller prompt/rollout shape. Contract, schema, instrumentation, and
+predictor-alignment errors are fatal rather than OOM fallbacks.
+
+## Predictor alignment
 
 For stored step `t`:
 
@@ -849,8 +906,8 @@ processing `y_t` to the row for `y_t`.
 
 ### Cache handling
 
-The batch-size-one base cache is never mutated by a rollout microbatch. Cache
-replication creates a distinct mutable cache for that microbatch. In the current
+The per-prompt base cache rows are never mutated by a rollout chunk. Cache
+selection/repetition creates distinct mutable rows for that chunk. In the current
 Transformers runtime, cache construction may use the supported cache conversion
 and batch-repeat APIs, but those details remain inside the model facade.
 
@@ -883,8 +940,8 @@ The canonical byte encoding and hash algorithm are versioned and tested. Python'
 process-randomized `hash()` must not be used.
 
 Each rollout constructs one CUDA `torch.Generator` on the model device and seeds
-it once. Dataset order, worker count, microbatch size, OOM fallback, or previously
-completed rollouts must not change another rollout's generated sequence.
+it once. Dataset order, worker count, prompt batching shape, OOM fallback, or previously
+completed rollouts must not change another RolloutKey's generated sequence.
 
 ## Runner contract
 
@@ -905,10 +962,12 @@ Execution order:
 6. Materialize examples in stable adapter order and atomically write
    `examples.parquet` before the first core shard.
 7. Enter the instrumentation context.
-8. Process one example at a time.
-9. Derive the 32 rollout identities and remove committed ones.
-10. Generate pending rollout microbatches.
-11. Commit completed rollout bundles in core shards.
+8. Deterministically schedule pending examples into prompt-batch units.
+9. Derive rollout identities and remove checkpoint-completed ones.
+10. Prepare and generate each prompt-batch unit, falling back to per-prompt
+    and then per-rollout isolation when a prompt is bad or a shape OOMs.
+11. Demultiplex completed bundles by sample ID and commit per-example core
+    shards.
 12. Optionally invoke online scoring after the core shard is committed.
 13. Restore instrumentation and release model resources.
 14. Atomically finalize the run manifest.
@@ -929,13 +988,14 @@ example merely because some of its rollouts are complete.
 
 ### OOM policy
 
-An OOM in a microbatch may trigger a smaller microbatch size for the same pending
-rollouts after collector and CUDA state are cleared. Seeds and rollout identities
-remain unchanged.
-
-The effective microbatch size and fallback are logged. Repeated failure at size
-one creates failure records and leaves those rollout identities incomplete.
-Successful rollouts from other microbatches remain committed.
+A prompt-batch scheduling unit is uncommitted until all generation for that
+unit succeeds. On OOM, instrumentation is cancelled; partial records, cache,
+observations, and advanced generators are discarded; and generators are rebuilt
+from stable seeds. Prompt count is reduced first for prompt-prefill OOM. Decode
+OOM may reduce prompt count and/or rollout rows. Requested/effective prompt count,
+rollout rows, active rows, and fallback counts are logged. A size-one failure is
+recorded incomplete. Instrumentation, facade, predictor-alignment, schema, and
+key errors are not downgraded to ordinary OOM recovery.
 
 ## Planning contract
 
@@ -1087,10 +1147,10 @@ visconf verify-storage --output-root <persistent_output_root> [--initialize]
 - `score` performs versioned offline scoring.
 - `validate` verifies manifests, checkpoints, schemas, hashes, and relational
   invariants; `--production` additionally requires a benchmark report.
-- `benchmark` measures configured microbatch candidates only on matching
-  target hardware. `--prompts` can select multiple real examples; results are
-  hashed and released one rollout at a time so long efficiency baselines do not
-  retain every prompt's metric rows in memory.
+- `benchmark` measures configured prompt/rollout batch shapes only on matching
+  target hardware. `--prompts` selects multiple real examples; reports include
+  prompt lengths, image-token ranges, padding telemetry, active rows, fallback
+  counts, throughput, and a retained-ID hash.
 - `scripts/run_efficiency_benchmark.sh` runs a bounded real-model benchmark
   through the normal runner, transaction, checkpoint, manifest, and resume
   paths so performance work can be compared against complete Parquet output.
@@ -1103,7 +1163,7 @@ strategy, sample ID when known, and rollout index when known.
 
 ## Resource lifetime and memory policy
 
-The runner operates on one example at a time.
+The runner operates on deterministic prompt-batch scheduling units and commits per-example shards.
 
 ### Run lifetime
 
@@ -1115,15 +1175,16 @@ Live for the run:
 - Storage session and resume index.
 - Resolved run configuration.
 
-### Example lifetime
+### Prompt-batch lifetime
 
-Live only for one example:
+Live only for one bounded scheduling unit:
 
-- Prepared prompt tensors.
-- Batch-size-one base KV cache.
-- Float32 image prototypes for 36 layers.
-- Prompt-static token groups.
-- Pending rollout identities.
+- Prepared prompt records and padded multimodal batch tensors.
+- Per-prompt logical lengths, token groups, and float32 image prototypes.
+- Batched base KV cache and explicit prompt-to-row mappings.
+- Pending rollout identities after checkpoint filtering.
+
+Large visual tensors are released immediately after successful batched prefill.
 
 ### Forward-pass lifetime
 
@@ -1375,10 +1436,11 @@ that token, not the computation after it.
 Before any large run:
 
 1. Use the local Qwen2.5-VL-3B checkpoint in `qwen3vl-metrics`.
-2. Select one MathVerse example.
-3. Generate two rollouts with a short maximum.
-4. Run once with microbatch size one and once with size two.
-5. Assert identical retained IDs per rollout.
+2. Select at least two MathVerse examples with different prompt lengths.
+3. Generate two rollouts per example with a short maximum.
+4. Compare prompt-batch-one with a multi-prompt shape and both scheduling
+   strategies.
+5. Assert retained IDs per full RolloutKey and validate row mappings.
 6. Validate every Parquet schema and relational invariant.
 7. Inspect predictor positions, first-step grouping, stop trimming, metric ranges,
    infinity/null handling, and layer-valid counts.
@@ -1501,7 +1563,7 @@ Exit criteria:
 Implement:
 
 - Explicit single-device BF16/eager model and processor loading.
-- Multimodal prompt preparation and batch-size-one cached prefill.
+- Multimodal prompt preparation and unequal-length batched cached prefill.
 - Qwen position, cache-position, rope-delta, and image-input handling.
 - Restorable discovery and patching of all 36 decoder layers.
 - Float32 image prototypes and online attention/hidden reductions.
@@ -1513,8 +1575,8 @@ Exit criteria:
 - Patch restoration passes normal and exception tests.
 - Layers 35–36 follow the documented aggregate rules.
 - No full attention or per-layer hidden collection survives reduction.
-- A short real prompt prefill returns raw logits, reduced aligned observations,
-  prototypes, and a reusable base cache.
+- A short real prompt batch prefill returns per-prompt raw logits, reduced
+  aligned observations, prototypes, and reusable source-selectable cache rows.
 - Cache-copy results match an independent prompt run for the tested steps.
 
 ### Phase 6: cached predictor-aligned generation
@@ -1535,6 +1597,8 @@ Exit criteria:
 
 - The fake-model predictor-alignment test passes.
 - Microbatch sizes 1, 2, and 4 produce identical rollout sequences.
+- Prompt batch sizes 1 and 2 produce identical fake-model sequences per full
+  RolloutKey, with no cross-prompt metric contamination.
 - Removing finished rows does not perturb surviving rows.
 - EOS/`<|im_end|>`, immediate stop, and maximum-length cases pass.
 - OOM retry at a smaller microbatch preserves seeds and sequences.
@@ -1587,7 +1651,8 @@ an intentionally interrupted transaction and an injected microbatch OOM fallback
 
 Exit criteria:
 
-- Microbatch sizes one and two produce identical retained IDs per rollout.
+- Microbatch sizes one and two and prompt-batch sizes one and two produce
+  identical retained IDs per full RolloutKey.
 - Every output table, key, type, null, infinity, and layer-valid count validates.
 - Predictor positions and first-step groups are manually or programmatically
   audited.
@@ -1614,15 +1679,18 @@ Exit criteria:
 
 ### Phase 11: hardware benchmark and production readiness
 
-Benchmark real visual sequence lengths:
+Benchmark real visual sequence lengths with explicit (prompt_batch_size,
+rollout_microbatch_size) shapes:
 
-- A100 40 GB: microbatches 4 and 8.
-- A100 80 GB: microbatches 8 and 16.
-- H100 80 GB: microbatch 16, then 32.
+- RTX 4090 24 GB: (16,32) is the current development default; verify headroom
+  on representative prompts.
+- A100 40 GB: measure prompt batches and rollout rows appropriate to the card.
+- A100 80 GB and H100 80 GB: compare prompt-batch-one baseline with contiguous
+  and bounded token-count-bucketed multi-prompt shapes.
 
-Record prompt and decode timing, peak memory, throughput, and OOM fallback.
-Choose hardware-specific defaults without changing semantic configuration or
-rollout seeds.
+Record prompt/decode timing, padded and unpadded prompt tokens, padding fraction,
+peak memory, throughput, OOM fallback, and retained-ID hashes. A production shape
+must complete exactly without fallback and match the baseline retained-ID hash.
 
 Exit criteria:
 
@@ -1664,7 +1732,7 @@ The following are settled for the initial code:
 - Shared `experiment_group_id` and experiment manifest.
 - 32 rollouts per example per run.
 - Custom cached predictor-aligned decoding.
-- Batch-size-one prompt prefill with per-microbatch cache replication.
+- Batched unequal-length prompt prefill with explicit source-row cache selection.
 - Independent rollout generators.
 - Eager attention and online reduction.
 - 36 model layers with fixed phase ranges 1–21 and 22–34.
@@ -1674,7 +1742,7 @@ The following are settled for the initial code:
 - Trimmed stop-token rows.
 - Parquet plus checkpoint-last commits.
 - Offline scoring by default.
-- One GPU and one example at a time.
+- One GPU with deterministic multi-prompt scheduling and per-example commits.
 
 Dataset source IDs, exact production splits/filters, prompt wording,
 `max_new_tokens`, and hardware microbatch defaults remain configuration choices
@@ -1682,3 +1750,19 @@ that must be frozen and recorded before production. They do not require a
 repository architecture change.
 
 All source paths, split labels, and filters remain configurable in dataset YAML.
+
+### Prompt scheduling and flattened decode rows
+
+The runner filters checkpoint-completed rollout identities before scheduling.
+contiguous preserves canonical source order. token_count_bucketed prepares only
+a bounded window and sorts by prompt token count, image token count, then
+canonical source ordinal. Prompt count, unpadded length range, padded/unpadded
+token totals, padding fraction, image-token range, and requested/effective row
+counts are emitted as telemetry.
+
+PromptBatchWorkItem carries the example/sample identity, source ordinal,
+PromptRecord, TokenGroups, exact eligible image-token count, pending RolloutKey
+values, and prepared prompt. DecodeRowMapping carries model row, prompt row,
+sample ID, rollout key, and mutable rollout state. Cache selection and active-row
+compaction update all row-aligned tensors and these mappings together. Physical
+padded cache width never substitutes for logical per-prompt context length.

@@ -94,7 +94,7 @@ VisConf/
 |       |-- a100_40gb.yaml
 |       |-- a100_80gb.yaml
 |       |-- rtx_4090.yaml
-|       |-- rtx_4090_mb32.yaml
+|       |-- rtx_4090.yaml
 |       `-- h100.yaml
 |-- docs/
 |   |-- ATTENTION_METRICS.MD
@@ -391,14 +391,26 @@ The loop is:
 Do not shift attention or hidden-state metrics to the state obtained after
 processing the token named by the same row.
 
+## Prompt-batched decoding contract
+
+generation.prompt_batch_size limits independent examples per scheduling unit;
+rollout_microbatch_size limits simultaneous pending rollouts per prompt.
+Flattened decode rows normally do not exceed their product. Contiguous scheduling
+preserves canonical source order. Token-count bucketing sorts only a bounded
+window by exact prompt-token count, exact eligible image-token count, and source
+ordinal. The resolved configuration records strategy, window, and scheduler
+algorithm version. Each flattened row retains an explicit prompt row, sample ID,
+rollout key, state, logical context length, and cache-row mapping through every
+compaction. Production profiles remain at prompt_batch_size 1 until an exact
+larger shape passes target-GPU no-fallback and retained-ID validation.
+
 ## GPU and batching policy
 
-- Run one dataset example at a time; do not initially batch unrelated examples.
+- A decode scheduling unit may contain several independent prompts and several independently seeded rollouts per prompt.
 - `rollouts_per_example` and `rollout_microbatch_size` are different settings.
 - Start conservatively and benchmark with real visual sequence lengths:
-  - RTX 4090 24 GB: use the conservative profile initially; the dedicated
-    `rtx_4090_mb32` profile is validated for the current one-example-at-a-time,
-    32-rollout workload.
+  - RTX 4090 24 GB: use prompt_batch_size 16 with rollout_microbatch_size 32
+    after validating representative prompt lengths on the target card.
   - A100 40 GB: microbatch 4-8.
   - A100 80 GB: microbatch 8-16.
   - H100 80 GB: microbatch 16, then test 32.
@@ -455,8 +467,8 @@ stored token row manually or through invariant checks.
    checkpoint-last transactions, failures, and resume using synthetic records.
 4. Implement the dataset protocol, MathVerse adapter, prompt construction, and
    tokenizer-based `I`, `P`, and `G_t` grouping tests.
-5. Implement the Qwen facade, batch-size-one prompt prefill, restorable 36-layer
-   instrumentation, image prototypes, and online metric accumulation.
+5. Implement the Qwen facade, padded multimodal prompt-batch prefill, restorable
+   36-layer row-aware instrumentation, image prototypes, and online metric accumulation.
 6. Implement cached predictor-aligned generation, cache replication, active-row
    compaction, independent rollout RNG, and completed-rollout bundles.
 7. Integrate one-run execution, CLI commands, group orchestration, and core
