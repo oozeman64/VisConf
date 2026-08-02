@@ -1,4 +1,4 @@
-"""MMMU-Pro standard four-option Parquet adapter."""
+"""MMMU-Pro standard Parquet adapter with variable option counts."""
 
 from __future__ import annotations
 
@@ -128,9 +128,10 @@ class MMMUProAdapter:
                         )
                     seen.add(sample_id)
                     options = _options(row.get("options"))
-                    if len(options) != 4:
+                    if not 2 <= len(options) <= 26:
                         raise DatasetError(
-                            "MMMU-Pro standard source rows must have four options"
+                            "MMMU-Pro options must contain between two and 26 "
+                            "choices"
                         )
                     image_numbers = tuple(
                         index

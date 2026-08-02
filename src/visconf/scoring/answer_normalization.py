@@ -14,7 +14,7 @@ _FRAC_RE = re.compile(
 _RATIO_RE = re.compile(r"(-?\d*\.?\d+)\s*/\s*(-?\d*\.?\d+)")
 _BOXED_LETTER_RE = re.compile(
     r"(?:<boxed>|(?<![A-Za-z])\\?boxed\s*\{)"
-    r"\s*[\(\[]?\s*([A-Ha-h])\b"
+    r"\s*[\(\[]?\s*([A-Za-z])\b"
 )
 
 
@@ -149,7 +149,7 @@ def normalize_choice_text(value: Any) -> str:
     return re.sub(r"[{}\s,，。.;；:：]", "", text).strip("()[]")
 
 
-def parse_mcq_choices(question: str, max_choices: int = 8) -> dict[str, str]:
+def parse_mcq_choices(question: str, max_choices: int = 26) -> dict[str, str]:
     letters = "".join(chr(65 + index) for index in range(max_choices))
     matches = list(
         re.finditer(
@@ -201,7 +201,7 @@ def _boxed_letter_lenient(text: str) -> str:
 
 def _extract_choice(text: str, raw_boxed: str, question: str):
     boxed = strip_latex_units(raw_boxed).strip().upper()
-    match = re.match(r"^[\(\[]?\s*([A-H])\b", boxed)
+    match = re.match(r"^[\(\[]?\s*([A-Z])\b", boxed)
     if match:
         return match.group(1), "boxed_letter"
     if raw_boxed:
@@ -216,15 +216,15 @@ def _extract_choice(text: str, raw_boxed: str, question: str):
 
     final = _last_sentence(text)
     for pattern in (
-        r"(?:answer|choice)\s*(?:is\b\s*)?:?\s*[\(\[]?\s*([A-H])\b",
-        r"\boption\s*(?:is\b\s*)?:?\s*[\(\[]?\s*([A-H])\b",
+        r"(?:answer|choice)\s*(?:is\b\s*)?:?\s*[\(\[]?\s*([A-Z])\b",
+        r"\boption\s*(?:is\b\s*)?:?\s*[\(\[]?\s*([A-Z])\b",
     ):
         match = re.search(pattern, final, re.IGNORECASE)
         if match:
             return match.group(1).upper(), "explicit_answer_letter"
 
     last_line = _last_line(text)
-    match = re.match(r"^[\(\[]?\s*([A-H])\s*(?:[.\):\]]|$)", last_line)
+    match = re.match(r"^[\(\[]?\s*([A-Z])\s*(?:[.\):\]]|$)", last_line)
     if match:
         letter = match.group(1).upper()
         choices = parse_mcq_choices(question)
@@ -248,7 +248,7 @@ def score_generation(
             question,
         )
         gold_match = re.match(
-            r"^[\(\[]?\s*([A-H])\b",
+            r"^[\(\[]?\s*([A-Z])\b",
             strip_latex_units(gold),
         )
         gold_letter = gold_match.group(1) if gold_match else gold

@@ -1,7 +1,7 @@
 name: mmmu_pro
 adapter: mmmu_pro
 source: "../MMMU_Pro/standard (4 options)"
-revision: local-mmmu-pro-standard-4-options
+revision: local-mmmu-pro-standard-variable-options
 split: test
 filter_id: all
 filters: {}

@@ -4,8 +4,9 @@ VisConf runs predictor-aligned visual-confidence experiments for Qwen2.5-VL-3B.
 The initial group contains six independent runs: MathVerse, MathVista, and
 MMMU-Pro crossed with the diverse and concentrated sampling strategies.
 The defaults use the Vision Intensive subset of MathVerse testmini, all
-MathVista testmini rows, and all rows in the MMMU-Pro standard four-option test
-source. Dataset YAML files can override these selections.
+MathVista testmini rows, and all rows in the MMMU-Pro standard test source;
+that source may contain between two and nine choices per question. Dataset YAML
+files can override these selections.
 
 The normative contracts are [AGENTS.MD](AGENTS.MD),
 [docs/REPO_SCHEMA.MD](docs/REPO_SCHEMA.MD),

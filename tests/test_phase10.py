@@ -117,6 +117,28 @@ def test_mmmu_pro_preserves_two_images_and_shared_storage_schema():
     assert len(table.to_pylist()[0]["images"]) == 2
 
 
+def test_mmmu_pro_accepts_variable_option_counts_and_scores_late_choice():
+    loaded = load_experiment_group_config(CONFIG)
+    config = dataset_config(loaded, "mmmu_pro").model_copy(
+        update={"filters": {"id": "test_Agriculture_195"}}
+    )
+    adapter = MMMUProAdapter()
+    example = next(iter(islice(adapter.load_examples(config), 1)))
+
+    assert example.metadata["options"] == [
+        "Potassium",
+        "Molybdenum",
+        "Nitrogen",
+        "Don't know and don't want to guess",
+        "Phosphate",
+    ]
+    assert adapter.score(
+        example,
+        r"reasoning \boxed{E}",
+        loaded.scoring,
+    )["is_correct"]
+
+
 def test_registry_and_planner_keep_six_dataset_strategy_run_ids(tmp_path):
     loaded = load_experiment_group_config(CONFIG)
     assert {
