@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import sys
+import time
 import traceback
 import uuid
 from dataclasses import dataclass
@@ -65,6 +67,82 @@ logger = logging.getLogger(__name__)
 
 class RunnerError(RuntimeError):
     """Raised when a resolved run cannot be executed."""
+
+
+def _format_eta(seconds: float | None) -> str:
+    if seconds is None:
+        return "--:--"
+    whole_seconds = max(0, int(round(seconds)))
+    minutes, remaining_seconds = divmod(whole_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{remaining_seconds:02d}"
+    return f"{minutes:02d}:{remaining_seconds:02d}"
+
+
+class _RunProgress:
+    """Small stderr progress reporter for prompt-batched run progress."""
+
+    _BAR_WIDTH = 20
+
+    def __init__(
+        self,
+        run: ResolvedRunConfig,
+        total_prompts: int,
+        *,
+        completed_prompts: int = 0,
+        stream: Any | None = None,
+    ) -> None:
+        self._label = f"{run.dataset.name}/{run.sampling.name}"
+        self._total = total_prompts
+        self._completed = min(max(completed_prompts, 0), total_prompts)
+        self._initial_completed = self._completed
+        self._stream = stream or sys.stderr
+        self._started_at = time.monotonic()
+        self._render()
+
+    def _eta(self) -> float | None:
+        remaining = self._total - self._completed
+        if remaining <= 0:
+            return 0.0
+        completed_since_start = self._completed - self._initial_completed
+        elapsed = time.monotonic() - self._started_at
+        if completed_since_start <= 0 or elapsed <= 0:
+            return None
+        return remaining * elapsed / completed_since_start
+
+    def _render(self) -> None:
+        fraction = self._completed / self._total if self._total else 1.0
+        filled = min(self._BAR_WIDTH, int(fraction * self._BAR_WIDTH))
+        bar = "#" * filled + "-" * (self._BAR_WIDTH - filled)
+        print(
+            f"{self._label} [{bar}] "
+            f"{self._completed}/{self._total} prompts complete "
+            f"| ETA {_format_eta(self._eta())}",
+            file=self._stream,
+            flush=True,
+        )
+
+    def advance(self, prompt_count: int) -> None:
+        if prompt_count < 0:
+            raise ValueError("prompt_count must be non-negative")
+        self._completed = min(self._total, self._completed + prompt_count)
+        self._render()
+
+
+def _completed_prompt_count(
+    run: ResolvedRunConfig,
+    resume: Any,
+) -> int:
+    rollout_indices_by_sample: dict[str, set[int]] = {}
+    for key in resume.completed_rollouts:
+        rollout_indices_by_sample.setdefault(key.sample_id, set()).add(
+            key.rollout_index
+        )
+    return sum(
+        len(indices) >= run.generation.rollouts_per_example
+        for indices in rollout_indices_by_sample.values()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +514,11 @@ def execute_run(
                 selection_sha256=_file_sha256(examples_path),
             )
 
+            progress = _RunProgress(
+                run,
+                len(example_rows),
+                completed_prompts=_completed_prompt_count(run, resume),
+            )
             stage = "generation"
             example_failures = 0
             with make_instrumentation(model_facade) as instrumentation:
@@ -535,6 +618,7 @@ def execute_run(
                 for unit in units:
                     stage = "generation"
                     current_example = unit[0].example
+                    completed_prompts = 0
                     completed_by_sample: dict[str, list[Any]] = {
                         item.sample_id: [] for item in unit
                     }
@@ -684,6 +768,8 @@ def execute_run(
                                         item.example,
                                     ),
                                 )
+                        if len(bundles) == len(item.pending_rollout_keys):
+                            completed_prompts += 1
                         log_event(
                             logger,
                             "example_completed",
@@ -692,6 +778,7 @@ def execute_run(
                             shard_id=core_shard_id,
                             prompt_batch_size=len(unit),
                         )
+                    progress.advance(completed_prompts)
                     stage = "generation"
 
             stage = "completion"

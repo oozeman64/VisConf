@@ -128,7 +128,9 @@ def planned(tmp_path: Path, group_id: str):
     )
 
 
-def test_one_run_commits_examples_and_resumes_without_duplicates(tmp_path):
+def test_one_run_commits_examples_and_resumes_without_duplicates(
+    tmp_path, capsys
+):
     plan = planned(tmp_path, "exp-runner")
     run = plan.runs[0]
 
@@ -140,6 +142,10 @@ def test_one_run_commits_examples_and_resumes_without_duplicates(tmp_path):
         engine_factory=FakeEngine,
         attempt_id="attempt-test",
     )
+    progress_output = capsys.readouterr().err
+    assert "0/2 prompts complete | ETA --:--" in progress_output
+    assert "2/2 prompts complete | ETA 00:00" in progress_output
+
     assert summary.status is RunStatus.COMPLETE
     assert summary.committed_rollouts == 64
     assert summary.committed_shards == 2
