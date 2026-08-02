@@ -283,11 +283,11 @@ def compute_attention_metrics_batch(
     )
     grouped_rows: dict[StepTokenGroups, list[int]] = {}
     for row_index, group in enumerate(groups):
-        _validate_groups(group, vectors.shape[1])
         grouped_rows.setdefault(group, []).append(row_index)
 
     results: list[AttentionScenarioMetrics | None] = [None] * vectors.shape[0]
     for group, row_indices in grouped_rows.items():
+        _validate_groups(group, vectors.shape[1])
         indices = torch.tensor(row_indices, dtype=torch.long)
         rows = vectors.index_select(0, indices)
         row_validity = valid_rows.index_select(0, indices)

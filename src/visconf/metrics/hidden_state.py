@@ -83,7 +83,11 @@ def compute_layer_cosines_tensor(
     predictor_hidden: torch.Tensor,
     image_prototype: torch.Tensor | None,
 ) -> torch.Tensor:
-    """Return device-resident normalized cosines, using NaN when undefined."""
+    """Return device-resident normalized cosines, using NaN when undefined.
+
+    A single prototype is broadcast across the batch. A two-dimensional
+    prototype tensor supplies one prototype per predictor row.
+    """
 
     if not isinstance(predictor_hidden, torch.Tensor):
         raise MetricInputError("hidden states must be torch.Tensor values")
@@ -98,7 +102,17 @@ def compute_layer_cosines_tensor(
         )
     if not isinstance(image_prototype, torch.Tensor):
         raise MetricInputError("hidden states must be torch.Tensor values")
-    if image_prototype.ndim != 1 or predictor_hidden.shape[1:] != image_prototype.shape:
+    if image_prototype.ndim == 1:
+        if predictor_hidden.shape[1:] != image_prototype.shape:
+            raise MetricInputError(
+                "predictor hidden state and image prototype must be equal-length vectors"
+            )
+    elif image_prototype.ndim == 2:
+        if predictor_hidden.shape != image_prototype.shape:
+            raise MetricInputError(
+                "batched image prototypes must match predictor hidden states"
+            )
+    else:
         raise MetricInputError(
             "predictor hidden state and image prototype must be equal-length vectors"
         )
@@ -110,18 +124,20 @@ def compute_layer_cosines_tensor(
         device=predictor.device,
         dtype=torch.float32,
     )
+    if prototype.ndim == 1:
+        prototype = prototype.unsqueeze(0).expand_as(predictor)
     predictor_norm = torch.linalg.vector_norm(predictor, dim=-1)
-    prototype_norm = torch.linalg.vector_norm(prototype)
+    prototype_norm = torch.linalg.vector_norm(prototype, dim=-1)
     valid = (
         torch.isfinite(predictor).all(dim=-1)
-        & torch.isfinite(prototype).all()
+        & torch.isfinite(prototype).all(dim=-1)
         & (predictor_norm >= HIDDEN_NORM_EPSILON)
         & (prototype_norm >= HIDDEN_NORM_EPSILON)
     )
     denominator = (predictor_norm * prototype_norm).clamp_min(
         HIDDEN_NORM_EPSILON
     )
-    cosine = torch.sum(predictor * prototype.unsqueeze(0), dim=-1) / denominator
+    cosine = torch.sum(predictor * prototype, dim=-1) / denominator
     normalized = torch.clamp((cosine + 1) / 2, min=0, max=1)
     return torch.where(
         valid,

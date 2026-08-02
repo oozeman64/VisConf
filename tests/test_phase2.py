@@ -210,6 +210,11 @@ def test_attention_and_hidden_metrics_cover_fixed_aggregates() -> None:
     )
     assert cosine_tensor[:2].tolist() == pytest.approx((1.0, 0.0))
     assert torch.isnan(cosine_tensor[2])
+    pairwise_cosines = compute_layer_cosines_tensor(
+        torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        torch.tensor([[1.0, 0.0], [-1.0, 0.0]]),
+    )
+    assert pairwise_cosines.tolist() == pytest.approx((1.0, 0.0))
 
     layer_values: list[float | None] = [0.5] * 36
     layer_values[0] = None

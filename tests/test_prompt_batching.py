@@ -263,7 +263,7 @@ def test_instrumentation_vectorizes_rollouts_by_source_prompt(monkeypatch):
         observations = instrumentation.finish_step()
 
     assert len(observations.rows) == 4
-    assert calls == [2, 2] * 36
+    assert calls == [4] * 36
 
 
 def _observation(marker: float, width: int) -> RowStepObservation:

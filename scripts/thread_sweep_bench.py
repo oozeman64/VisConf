@@ -23,6 +23,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prompt-count", type=int, required=True)
     parser.add_argument("--rollout-count", type=int, required=True)
+    parser.add_argument(
+        "--total-prompt-count",
+        type=int,
+        help="number of prompts to benchmark; defaults to --prompt-count",
+    )
+    parser.add_argument("--max-new-tokens", type=int)
     args = parser.parse_args()
 
     group_dir = args.output_root.resolve() / args.group
@@ -33,7 +39,8 @@ def main() -> int:
         run,
         args.output,
         candidates=[(args.prompt_count, args.rollout_count)],
-        prompt_count=args.prompt_count,
+        prompt_count=args.total_prompt_count or args.prompt_count,
+        max_new_tokens=args.max_new_tokens,
     )
     print(json.dumps(asdict(report), indent=2, sort_keys=True))
     return 0

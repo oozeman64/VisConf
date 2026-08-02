@@ -188,11 +188,15 @@ class _StepCollector:
                 for group in self.layout_groups
             }
 
-        layer_cosines = torch.empty(
+        layer_cosines = torch.full(
             (self.batch_size,),
+            torch.nan,
             dtype=torch.float32,
             device=hidden_output.device,
         )
+        cosine_hidden: list[torch.Tensor] = []
+        cosine_prototypes: list[torch.Tensor] = []
+        cosine_rows: list[torch.Tensor] = []
         for group in self.layout_groups:
             rows = group.row_indices(hidden_output.device)
             valid = group.positions(hidden_output.device)
@@ -216,11 +220,25 @@ class _StepCollector:
                 layer_number,
                 selected.to(dtype=torch.float32),
             )
-            cosines = compute_layer_cosines_tensor(
-                hidden_output.index_select(0, rows)[:, query_index, :],
-                prototypes_by_source[group.source_prompt_index],
+            prototype = prototypes_by_source[group.source_prompt_index]
+            if prototype is not None:
+                predictor = hidden_output.index_select(0, rows)[
+                    :, query_index, :
+                ]
+                cosine_hidden.append(predictor)
+                cosine_prototypes.append(
+                    prototype.unsqueeze(0).expand(predictor.shape[0], -1)
+                )
+                cosine_rows.append(rows)
+        if cosine_hidden:
+            layer_cosines.index_copy_(
+                0,
+                torch.cat(cosine_rows),
+                compute_layer_cosines_tensor(
+                    torch.cat(cosine_hidden),
+                    torch.cat(cosine_prototypes),
+                ),
             )
-            layer_cosines.index_copy_(0, rows, cosines)
         self.hidden_cosines[layer_number] = layer_cosines
         self.layer_calls.add(layer_number)
 
