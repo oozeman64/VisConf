@@ -14,7 +14,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets \
     TRANSFORMERS_CACHE=/workspace/.cache/huggingface/transformers \
     PIP_CACHE_DIR=/workspace/.cache/pip \
-    VISCONF_IMAGE=runpod-qwen3vl-metrics
+    VISCONF_IMAGE=runpod-qwen3vl-metrics \
+    VISCONF_MAX_THREADS=8
 
 RUN python -c "import sys; assert sys.version_info[:2] == (3, 11), sys.version" \
     && python -c "import torch; assert torch.__version__ == '2.5.1+cu124', torch.__version__; assert torch.version.cuda == '12.4', torch.version.cuda"
