@@ -258,7 +258,13 @@ def compute_attention_metrics_batch(
     scenario_vectors: torch.Tensor,
     groups: Sequence[StepTokenGroups],
 ) -> tuple[AttentionScenarioMetrics, ...]:
-    """Compute a scenario microbatch with one transfer and batched reductions."""
+    """Compute a scenario microbatch with batched reductions and one transfer.
+
+    Reductions run on the device the vectors already live on. Only the
+    assembled metric matrix crosses to the host, which is far smaller than the
+    key vectors it was reduced from, so decoding no longer pays for this on the
+    CPU.
+    """
 
     if not isinstance(scenario_vectors, torch.Tensor):
         raise MetricInputError("scenario_vectors must be a torch.Tensor")
@@ -268,10 +274,9 @@ def compute_attention_metrics_batch(
         )
     if len(groups) != scenario_vectors.shape[0]:
         raise MetricInputError("token-group batch differs from attention")
-    vectors = scenario_vectors.detach().to(
-        device="cpu",
-        dtype=torch.float32,
-    )
+    vectors = scenario_vectors.detach().to(dtype=torch.float32)
+    device = vectors.device
+    batch_size = vectors.shape[0]
     valid_rows = torch.isfinite(vectors).all(dim=1) & ~torch.any(
         vectors < -ATTENTION_EPSILON,
         dim=1,
@@ -285,43 +290,64 @@ def compute_attention_metrics_batch(
     for row_index, group in enumerate(groups):
         grouped_rows.setdefault(group, []).append(row_index)
 
-    results: list[AttentionScenarioMetrics | None] = [None] * vectors.shape[0]
+    metric_matrix = _undefined(
+        batch_size * len(ATTENTION_METRICS),
+        device,
+    ).view(batch_size, len(ATTENTION_METRICS))
+    assigned_rows = 0
     for group, row_indices in grouped_rows.items():
         _validate_groups(group, vectors.shape[1])
-        indices = torch.tensor(row_indices, dtype=torch.long)
+        indices = torch.tensor(row_indices, dtype=torch.long, device=device)
         rows = vectors.index_select(0, indices)
-        row_validity = valid_rows.index_select(0, indices)
         values = _compute_attention_metrics_batch_for_group(rows, group)
-        matrix = torch.stack(
-            [values[name] for name in ATTENTION_METRICS],
-            dim=1,
-        ).tolist()
-        validity = row_validity.tolist()
-        for offset, row_index in enumerate(row_indices):
-            if not validity[offset]:
-                results[row_index] = AttentionScenarioMetrics(
+        metric_matrix.index_copy_(
+            0,
+            indices,
+            torch.stack(
+                [values[name] for name in ATTENTION_METRICS],
+                dim=1,
+            ),
+        )
+        assigned_rows += len(row_indices)
+    if assigned_rows != batch_size:
+        raise MetricInputError("attention batch result is incomplete")
+
+    matrix = metric_matrix.tolist()
+    validity = valid_rows.tolist()
+    results: list[AttentionScenarioMetrics] = []
+    for row_index in range(batch_size):
+        if not validity[row_index]:
+            results.append(
+                AttentionScenarioMetrics(
                     valid=False,
                     **{name: None for name in ATTENTION_METRICS},
                 )
-                continue
-            results[row_index] = AttentionScenarioMetrics(
+            )
+            continue
+        row_values = matrix[row_index]
+        results.append(
+            AttentionScenarioMetrics(
                 valid=True,
                 **{
                     name: (
                         None
-                        if math.isnan(matrix[offset][metric_index])
-                        else float(matrix[offset][metric_index])
+                        if math.isnan(row_values[metric_index])
+                        else float(row_values[metric_index])
                     )
                     for metric_index, name in enumerate(ATTENTION_METRICS)
                 },
             )
-    if any(result is None for result in results):
-        raise MetricInputError("attention batch result is incomplete")
-    return tuple(result for result in results if result is not None)
+        )
+    return tuple(results)
 
 
-def _undefined(batch_size: int) -> torch.Tensor:
-    return torch.full((batch_size,), torch.nan, dtype=torch.float32)
+def _undefined(batch_size: int, device: torch.device) -> torch.Tensor:
+    return torch.full(
+        (batch_size,),
+        torch.nan,
+        dtype=torch.float32,
+        device=device,
+    )
 
 
 def _group_metrics_batch(
@@ -330,9 +356,10 @@ def _group_metrics_batch(
     prefix: str,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     batch_size = vectors.shape[0]
+    device = vectors.device
     if not positions:
-        total = torch.zeros(batch_size, dtype=torch.float32)
-        undefined = _undefined(batch_size)
+        total = torch.zeros(batch_size, dtype=torch.float32, device=device)
+        undefined = _undefined(batch_size, device)
         return {
             f"{prefix}_total": total,
             f"{prefix}_avg": undefined,
@@ -343,7 +370,7 @@ def _group_metrics_batch(
             f"{prefix}_dist_perplexity": undefined,
         }, total
 
-    indices = torch.tensor(positions, dtype=torch.long)
+    indices = torch.tensor(positions, dtype=torch.long, device=device)
     selected = vectors.index_select(1, indices)
     total = selected.sum(dim=1)
     distribution = selected / total.clamp_min(ATTENTION_EPSILON)[:, None]
@@ -364,7 +391,7 @@ def _group_metrics_batch(
         torch.full_like(total, torch.inf),
     )
     defined = total >= ATTENTION_EPSILON
-    undefined = _undefined(batch_size)
+    undefined = _undefined(batch_size, device)
 
     def when_defined(value: torch.Tensor) -> torch.Tensor:
         return torch.where(defined, value, undefined)
@@ -389,7 +416,7 @@ def _ratio_batch(
     return torch.where(
         denominator >= ATTENTION_EPSILON,
         numerator / denominator.clamp_min(ATTENTION_EPSILON),
-        _undefined(denominator.shape[0]),
+        _undefined(denominator.shape[0], denominator.device),
     )
 
 
