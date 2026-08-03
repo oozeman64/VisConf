@@ -29,7 +29,7 @@ from visconf.storage.manifest import atomic_write_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SHAPES = ((4, 32), (8, 32), (16, 32), (32, 32))
+DEFAULT_SHAPES = ((1,32), (2,32), (4, 32), (8, 32), (16, 32), (32, 32))
 
 
 def _shape(value: str) -> tuple[int, int]:
