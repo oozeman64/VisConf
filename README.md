@@ -90,6 +90,28 @@ scripts/run_efficiency_benchmark.sh \
   --max-new-tokens 1024
 ~~~
 
+Compare the five MathVerse prompt-batch shapes with 16 prompts, 32 rollouts
+per prompt, and a 100-token generation limit:
+
+~~~bash
+python scripts/mathverse_prompt_batch_benchmark.py
+~~~
+
+The script reports peak allocated/reserved VRAM, synchronized decode time, and
+decode-only/end-to-end generated-token throughput. It writes the detailed JSON
+report to outputs/benchmarks/mathverse_prompt_batch.json. The default shapes
+are 1x32, 2x32, 4x32, 8x32, and 16x32.
+
+On an 80 GB A100 RunPod, use the A100 config and hardware profile explicitly:
+
+~~~bash
+python scripts/mathverse_prompt_batch_benchmark.py \
+  --config configs/experiment_group.yaml \
+  --hardware-config configs/hardware/a100_80gb.yaml \
+  --output-root /workspace/visconf-output/benchmarks \
+  --output /workspace/visconf-output/benchmarks/mathverse_prompt_batch.json
+~~~
+
 Each dataset-by-strategy cell has its own immutable `run_id`, output directory,
 checkpoint inventory, and resume state. Core shards commit generation, token,
 probability, attention, and hidden-state tables atomically. Scores are versioned

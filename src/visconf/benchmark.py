@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import torch
 
@@ -61,6 +61,7 @@ class BenchmarkMeasurement:
     decode_seconds: float
     total_seconds: float
     peak_allocated_bytes: int
+    peak_reserved_bytes: int
     retained_tokens: int
     tokens_per_second: float | None
     oom_fallbacks: int
@@ -213,6 +214,7 @@ def benchmark_run(
     rollout_count: int | None = None,
     max_new_tokens: int | None = None,
     prompt_count: int = 1,
+    on_measurement: Callable[[BenchmarkMeasurement], None] | None = None,
 ) -> BenchmarkReport:
     """Benchmark real visual examples on the resolved target GPU."""
 
@@ -338,7 +340,7 @@ def benchmark_run(
                         for item in all_telemetry
                     )
                     fallback = timed.oom_fallbacks
-                    measurements.append(BenchmarkMeasurement(
+                    measurement = BenchmarkMeasurement(
                         requested_prompt_batch_size=prompt_size,
                         effective_prompt_batch_size=(
                             prompt_size if fallback == 0 else 0
@@ -364,14 +366,18 @@ def benchmark_run(
                         decode_seconds=timed.decode_seconds,
                         total_seconds=total,
                         peak_allocated_bytes=torch.cuda.max_memory_allocated(facade.device),
+                        peak_reserved_bytes=torch.cuda.max_memory_reserved(facade.device),
                         retained_tokens=retained,
                         tokens_per_second=retained / total if total > 0 else None,
                         oom_fallbacks=fallback,
                         retained_ids_sha256=ids_digest.hexdigest(),
-                    ))
+                    )
+                    measurements.append(measurement)
+                    if on_measurement is not None:
+                        on_measurement(measurement)
                 except torch.cuda.OutOfMemoryError:
                     instrumentation.cancel_step()
-                    measurements.append(BenchmarkMeasurement(
+                    measurement = BenchmarkMeasurement(
                         requested_prompt_batch_size=prompt_size,
                         effective_prompt_batch_size=0,
                         requested_rollout_microbatch_size=rollout_size,
@@ -393,11 +399,15 @@ def benchmark_run(
                         decode_seconds=timed.decode_seconds,
                         total_seconds=time.perf_counter() - started,
                         peak_allocated_bytes=torch.cuda.max_memory_allocated(facade.device),
+                        peak_reserved_bytes=torch.cuda.max_memory_reserved(facade.device),
                         retained_tokens=retained,
                         tokens_per_second=None,
                         oom_fallbacks=timed.oom_fallbacks,
                         retained_ids_sha256=None,
-                    ))
+                    )
+                    measurements.append(measurement)
+                    if on_measurement is not None:
+                        on_measurement(measurement)
                     torch.cuda.empty_cache()
     finally:
         del results
