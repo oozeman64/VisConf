@@ -214,6 +214,7 @@ def benchmark_run(
     rollout_count: int | None = None,
     max_new_tokens: int | None = None,
     prompt_count: int = 1,
+    sample_ids: Sequence[str] | None = None,
     on_measurement: Callable[[BenchmarkMeasurement], None] | None = None,
 ) -> BenchmarkReport:
     """Benchmark real visual examples on the resolved target GPU."""
@@ -240,15 +241,50 @@ def benchmark_run(
     )
     if token_limit <= 0:
         raise BenchmarkError("max_new_tokens must be positive")
+    requested_sample_ids = (
+        tuple(str(sample_id).strip() for sample_id in sample_ids)
+        if sample_ids is not None
+        else None
+    )
+    if requested_sample_ids is not None and (
+        not requested_sample_ids
+        or any(not sample_id for sample_id in requested_sample_ids)
+        or len(set(requested_sample_ids)) != len(requested_sample_ids)
+    ):
+        raise BenchmarkError("sample_ids must be non-empty and unique")
+    if requested_sample_ids is not None:
+        prompt_count = len(requested_sample_ids)
     if prompt_count <= 0:
         raise BenchmarkError("prompt_count must be positive")
     if prompt_count < max(prompt for prompt, _ in sizes):
         raise BenchmarkError("prompt_count must exercise the largest prompt axis")
 
     adapter = create_dataset_adapter(run.dataset.adapter)
-    examples = tuple(
-        islice(adapter.load_examples(run.dataset), prompt_count)
-    )
+    if requested_sample_ids is None:
+        examples = tuple(
+            islice(adapter.load_examples(run.dataset), prompt_count)
+        )
+    else:
+        requested_set = set(requested_sample_ids)
+        examples_by_id = {}
+        for example in adapter.load_examples(run.dataset):
+            if example.sample_id in requested_set:
+                examples_by_id[example.sample_id] = example
+                if len(examples_by_id) == len(requested_set):
+                    break
+        missing = tuple(
+            sample_id
+            for sample_id in requested_sample_ids
+            if sample_id not in examples_by_id
+        )
+        if missing:
+            raise BenchmarkError(
+                "dataset did not contain requested sample_ids: "
+                + ", ".join(missing)
+            )
+        examples = tuple(
+            examples_by_id[sample_id] for sample_id in requested_sample_ids
+        )
     if len(examples) != prompt_count:
         raise BenchmarkError(
             f"dataset provided {len(examples)} prompts, "

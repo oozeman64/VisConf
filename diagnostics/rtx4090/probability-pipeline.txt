@@ -1,0 +1,8 @@
+GPU: NVIDIA GeForce RTX 4090
+batch: 64
+vocabulary: 151936
+iterations: 5
+seconds: 0.07024227000010796
+steps/sec: 71.18220980034265
+rows/sec: 4555.661427221929
+checksum: 127902 -12.301620483398438

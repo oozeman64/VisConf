@@ -1,0 +1,5 @@
+GPU: NVIDIA GeForce RTX 4090
+seconds: 0.1524715576171875
+iterations/sec: 131.17200553702142
+calculated TFLOP/s: 144.2251453266529
+checksum: 196.0

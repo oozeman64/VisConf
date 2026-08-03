@@ -1,0 +1,21 @@
+2026-08-03T13:57:38+05:00
+/home/fedosr/VisualPO/VisConf
+526eb2cac662cffa19499b16a4149242f7eda3a3
+?? diagnostics/
+f1656cc8b2117ab2f4fe058a2eac5e6fe6f52eafc6701d0a854dbb885f13a219  scripts/mathverse_prompt_batch_benchmark.py
+b02827a73bc1a9733974c7a478dabb9f2f774d3cfc50b0705669a570f0421e15  src/visconf/generation/engine.py
+c482c0682d48e9c69130d4f5b08572f42fe74321467085cb0786ce23be7de65b  src/visconf/models/qwen25vl.py
+44ec7dbc9778c554a08630f57475364fbb9eb39997a7b0d4c061b3b5ff583f89  src/visconf/models/instrumentation.py
+f3ccef709f4c021a3cfbd588470417b4dd841681202a17b8efaca7cf8e40934d  src/visconf/metrics/probability.py
+6f8c5c88368e68dcd9f4cfdaddb31cad5ec1532174cd670dd9bf79160ddbaa3c  src/visconf/metrics/attention.py
+/home/fedosr/miniconda3/envs/qwen3vl-metrics/bin/python
+/home/fedosr/VisualPO/VisConf/src/visconf/__init__.py
+2.5.1+cu124
+12.4
+4.57.0
+NVIDIA GeForce RTX 4090
+(8, 9)
+True
+90100
+False
+True

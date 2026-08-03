@@ -1,0 +1,9 @@
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  8.43it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 10.70it/s]
+The following generation flags are not valid and may be ignored: ['temperature']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+GPU: NVIDIA GeForce RTX 4090
+batch: 32
+generated per row: 64
+seconds: 1.6164717239998936
+generated tokens/sec: 1266.9568972925226
+peak allocated GiB: 7.34438943862915
+peak reserved GiB: 7.53515625

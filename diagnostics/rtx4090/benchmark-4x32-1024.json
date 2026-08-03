@@ -1,0 +1,107 @@
+{
+  "benchmark": {
+    "group_id": "mathverse-prompt-batch-5826a0f0",
+    "shapes": [
+      [
+        4,
+        32
+      ]
+    ],
+    "throughput_definition": {
+      "decode_tokens_per_second": "retained_tokens / decode_seconds",
+      "end_to_end_tokens_per_second": "retained_tokens / total_seconds"
+    }
+  },
+  "created_at_utc": "2026-08-03T10:46:39.203148+00:00",
+  "dataset": "mathverse",
+  "environment": {
+    "cuda_available": true,
+    "cuda_runtime": "12.4",
+    "datasets": "3.2.0",
+    "gpu_memory_bytes": 25756696576,
+    "gpu_model": "NVIDIA GeForce RTX 4090",
+    "pyarrow": "24.0.0",
+    "python": "3.11.15",
+    "pytorch": "2.5.1+cu124",
+    "qwen_vl_utils": "0.0.8",
+    "transformers": "4.57.0"
+  },
+  "hardware_profile": {
+    "accelerator": "rtx 4090",
+    "benchmark_batch_shapes": [
+      [
+        4,
+        32
+      ]
+    ],
+    "benchmark_microbatch_sizes": [
+      32
+    ],
+    "default_rollout_microbatch_size": 32,
+    "max_active_decode_rows": 2048,
+    "max_rollout_microbatch_size": 32,
+    "memory_gb": 24,
+    "name": "rtx_4090"
+  },
+  "max_new_tokens": 1024,
+  "measurements": [
+    {
+      "completed_prompt_count": 8,
+      "decode_seconds": 97.32800821401725,
+      "effective_prompt_batch_size": 4,
+      "effective_rollout_microbatch_size": 32,
+      "max_image_token_count": 48,
+      "max_prompt_length": 145,
+      "maximum_active_decode_rows": 128,
+      "min_image_token_count": 12,
+      "min_prompt_length": 104,
+      "oom_fallbacks": 0,
+      "padding_fraction": 0.12410071942446044,
+      "peak_allocated_bytes": 9825497600,
+      "peak_reserved_bytes": 10978590720,
+      "prompt_batching_strategy": "contiguous",
+      "prompt_count": 8,
+      "prompt_seconds": 0.6847455860006448,
+      "requested_prompt_batch_size": 4,
+      "requested_rollout_microbatch_size": 32,
+      "retained_ids_sha256": "0d1d19a3082d4151fe0abc73668ddd993ed7a66e849b6118093bda5cf7a2d7df",
+      "retained_tokens": 77512,
+      "rollout_count": 32,
+      "status": "complete",
+      "tokens_per_second": 571.1932826884528,
+      "total_padded_prompt_tokens": 1112,
+      "total_seconds": 135.70187596599862,
+      "total_unpadded_prompt_tokens": 974
+    }
+  ],
+  "prompt_count": 8,
+  "run_config_hash": "337de2338ea79def8e748175b865642957e7c064a951627437a90593b500e15b",
+  "run_id": "run-554f5333aa895243",
+  "sample_id": "3",
+  "sample_ids": [
+    "3",
+    "8",
+    "13",
+    "18",
+    "23",
+    "28",
+    "33",
+    "38"
+  ],
+  "summary": [
+    {
+      "decode_seconds": 97.32800821401725,
+      "decode_tokens_per_second": 796.3997355165917,
+      "end_to_end_tokens_per_second": 571.1932826884528,
+      "oom_fallbacks": 0,
+      "peak_allocated_gib": 9.150707721710205,
+      "peak_reserved_gib": 10.224609375,
+      "prompt_batch_size": 4,
+      "prompt_seconds": 0.6847455860006448,
+      "retained_tokens": 77512,
+      "rollout_microbatch_size": 32,
+      "status": "complete",
+      "total_seconds": 135.70187596599862
+    }
+  ]
+}

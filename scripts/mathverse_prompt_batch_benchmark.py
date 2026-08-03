@@ -29,7 +29,25 @@ from visconf.storage.manifest import atomic_write_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SHAPES = ((1,32), (2,32), (4, 32), (8, 32), (16, 32), (32, 32))
+DEFAULT_SHAPES = ((1, 32), (2, 32), (4, 32), (8, 32), (16, 32))
+DEFAULT_SAMPLE_IDS = (
+    "963",
+    "968",
+    "973",
+    "978",
+    "983",
+    "988",
+    "993",
+    "998",
+    "1003",
+    "1008",
+    "1013",
+    "1018",
+    "1023",
+    "1028",
+    "1033",
+    "1038",
+)
 
 
 def _shape(value: str) -> tuple[int, int]:
@@ -74,15 +92,34 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--group-id")
     parser.add_argument("--strategy", default="diverse")
-    parser.add_argument("--prompts", type=int, default=32)
+    parser.add_argument(
+        "--prompts",
+        type=int,
+        default=None,
+        help=(
+            "legacy count of sequential prompts; overridden by --sample-ids "
+            "when both are provided"
+        ),
+    )
+    parser.add_argument(
+        "--sample-ids",
+        "--sample-id",
+        dest="sample_ids",
+        nargs="+",
+        default=None,
+        help=(
+            "MathVerse sample IDs to benchmark; the prompt count is derived "
+            "from this list"
+        ),
+    )
     parser.add_argument("--rollouts", type=int, default=32)
-    parser.add_argument("--max-new-tokens", type=int, default=100)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument(
         "--shape",
         dest="shapes",
         type=_shape,
         nargs="+",
-        default=DEFAULT_SHAPES,
+        default=None,
         help="one or more PROMPT_BATCHxROLLOUT_MICROBATCH values",
     )
     return parser
@@ -231,6 +268,18 @@ def _print_summary(
 
 def main() -> int:
     args = _parser().parse_args()
+    if args.sample_ids is not None:
+        sample_ids = tuple(args.sample_ids)
+        prompt_count = len(sample_ids)
+    elif args.prompts is None:
+        sample_ids = DEFAULT_SAMPLE_IDS
+        prompt_count = len(sample_ids)
+    else:
+        sample_ids = None
+        prompt_count = args.prompts
+    shapes = tuple(args.shapes) if args.shapes is not None else tuple(
+        shape for shape in DEFAULT_SHAPES if shape[0] <= prompt_count
+    )
     loaded = load_experiment_group_config(args.config)
     if args.strategy not in {item.name for item in loaded.strategies}:
         raise ValueError(f"strategy {args.strategy!r} is not present in {args.config}")
@@ -239,8 +288,8 @@ def main() -> int:
     loaded = _benchmark_config(
         loaded,
         _hardware_config(args.hardware_config),
-        tuple(args.shapes),
-        args.prompts,
+        shapes,
+        prompt_count,
         args.rollouts,
         args.max_new_tokens,
     )
@@ -261,7 +310,8 @@ def main() -> int:
     )
     benchmark_metadata = {
         "group_id": group_id,
-        "shapes": [list(shape) for shape in args.shapes],
+        "sample_ids": list(sample_ids) if sample_ids is not None else None,
+        "shapes": [list(shape) for shape in shapes],
         "throughput_definition": {
             "decode_tokens_per_second": "retained_tokens / decode_seconds",
             "end_to_end_tokens_per_second": "retained_tokens / total_seconds",
@@ -277,7 +327,7 @@ def main() -> int:
             else None
         )
         print(
-            f"Completed {len(progress_measurements)}/{len(args.shapes)} "
+            f"Completed {len(progress_measurements)}/{len(shapes)} "
             f"shape={measurement.requested_prompt_batch_size}x"
             f"{measurement.requested_rollout_microbatch_size} "
             f"status={measurement.status} "
@@ -292,11 +342,11 @@ def main() -> int:
             {
                 "status": "running",
                 "dataset": "mathverse",
-                "prompt_count": args.prompts,
+                "prompt_count": prompt_count,
                 "rollouts_per_prompt": args.rollouts,
                 "max_new_tokens": args.max_new_tokens,
                 "completed_shapes": len(progress_measurements),
-                "total_shapes": len(args.shapes),
+                "total_shapes": len(shapes),
                 "benchmark": benchmark_metadata,
                 "measurements": [
                     asdict(item) for item in progress_measurements
@@ -307,10 +357,11 @@ def main() -> int:
     report = benchmark_run(
         run,
         args.output,
-        candidates=tuple(args.shapes),
+        candidates=shapes,
         rollout_count=args.rollouts,
         max_new_tokens=args.max_new_tokens,
-        prompt_count=args.prompts,
+        prompt_count=prompt_count,
+        sample_ids=sample_ids,
         on_measurement=on_measurement,
     )
     summary = _summary(report)

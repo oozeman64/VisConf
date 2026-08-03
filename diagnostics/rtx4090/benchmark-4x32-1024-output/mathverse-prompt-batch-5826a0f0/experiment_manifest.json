@@ -1,0 +1,145 @@
+{
+  "created_at_utc": "2026-08-03T10:44:12.550669Z",
+  "document_hashes": {
+    "docs/ATTENTION_METRICS.MD": "bc124f2cd94dcdca760792e7b9089bbc29c641c16911da434a6d46557ec4cee4",
+    "docs/OUTPUT_SCHEMA.md": "9f5403c9d5a50d2dd634e95e0b4909a6b50909497719967a02418f0c51dffe2e",
+    "docs/PROBABILITY_CONFIDENCE_METRICS.md": "eaf8c41abff0986befca21c8bf2a6cdcdf60c7f1dd751ae254b0417310bbb4ea",
+    "docs/REPO_SCHEMA.MD": "65f5147dde3c1751590bc6ba3d1890efdcc9b90c47fad5cbfb61aa1bf20d04d9",
+    "docs/VISUAL_HIDDEN_STATE_METRICS.MD": "51e0e1955b43a84dfd4307655331491668f058e239cf09c6044d1de9dcd0cf0f"
+  },
+  "experiment_group_id": "mathverse-prompt-batch-5826a0f0",
+  "git_commit": "526eb2cac662cffa19499b16a4149242f7eda3a3",
+  "git_dirty": true,
+  "group_config_hash": "a88b1171c31985783763b63097cf0a04340e0fb8afff2aedd3360f81ee67ceb3",
+  "manifest_version": 1,
+  "output_root": "/home/fedosr/VisualPO/VisConf/diagnostics/rtx4090/benchmark-4x32-1024-output",
+  "runs": [
+    {
+      "config_hash": "337de2338ea79def8e748175b865642957e7c064a951627437a90593b500e15b",
+      "dataset": "mathverse",
+      "filter_id": "vision_intensive",
+      "relative_path": "run-554f5333aa895243",
+      "run_id": "run-554f5333aa895243",
+      "run_label": "mathverse-diverse",
+      "split": "testmini",
+      "status": "planned",
+      "strategy": "diverse"
+    },
+    {
+      "config_hash": "28669dfd4ce6ec24a5a067b31041cc08f1f91282cefe303fecf277287822b150",
+      "dataset": "mathverse",
+      "filter_id": "vision_intensive",
+      "relative_path": "run-5556cc82ea635394",
+      "run_id": "run-5556cc82ea635394",
+      "run_label": "mathverse-concentrated",
+      "split": "testmini",
+      "status": "planned",
+      "strategy": "concentrated"
+    },
+    {
+      "config_hash": "052dd43c874f547223ca1c90ba52fda8038aa692f0fb932caedb2cdcf786aea2",
+      "dataset": "mathvista",
+      "filter_id": "all",
+      "relative_path": "run-f71ab16805915f85",
+      "run_id": "run-f71ab16805915f85",
+      "run_label": "mathvista-diverse",
+      "split": "testmini",
+      "status": "planned",
+      "strategy": "diverse"
+    },
+    {
+      "config_hash": "00a4c61795b1c4f91297cfee4a9ea0d71a848749e2c907767419ba8cae96bfed",
+      "dataset": "mathvista",
+      "filter_id": "all",
+      "relative_path": "run-ae6fc1e2264e5aeb",
+      "run_id": "run-ae6fc1e2264e5aeb",
+      "run_label": "mathvista-concentrated",
+      "split": "testmini",
+      "status": "planned",
+      "strategy": "concentrated"
+    },
+    {
+      "config_hash": "81ceb84b7112f7755db528adfc6a09483b6202d02a2fa3ff2a04b16e7b64515c",
+      "dataset": "mmmu_pro",
+      "filter_id": "all",
+      "relative_path": "run-2fb017783ebc52f7",
+      "run_id": "run-2fb017783ebc52f7",
+      "run_label": "mmmu_pro-diverse",
+      "split": "test",
+      "status": "planned",
+      "strategy": "diverse"
+    },
+    {
+      "config_hash": "8b0f2abe2bdf97a5d6f16b16f98cbe6fcd8bcea75e9f4be670caad064f6d5a22",
+      "dataset": "mmmu_pro",
+      "filter_id": "all",
+      "relative_path": "run-30180063433055e3",
+      "run_id": "run-30180063433055e3",
+      "run_label": "mmmu_pro-concentrated",
+      "split": "test",
+      "status": "planned",
+      "strategy": "concentrated"
+    }
+  ],
+  "shared_configuration": {
+    "generation": {
+      "max_new_tokens": 1024,
+      "prompt_batch_size": 4,
+      "prompt_batching_strategy": "contiguous",
+      "prompt_bucket_window_size": null,
+      "prompt_scheduler_algorithm_version": 1,
+      "rollout_microbatch_size": 32,
+      "rollouts_per_example": 32
+    },
+    "hardware": {
+      "accelerator": "rtx 4090",
+      "benchmark_batch_shapes": [
+        [
+          4,
+          32
+        ]
+      ],
+      "benchmark_microbatch_sizes": [
+        32
+      ],
+      "default_rollout_microbatch_size": 32,
+      "max_active_decode_rows": 2048,
+      "max_rollout_microbatch_size": 32,
+      "memory_gb": 24,
+      "name": "rtx_4090"
+    },
+    "model": {
+      "attention_implementation": "eager",
+      "cpu_offload": false,
+      "device": "cuda:0",
+      "dtype": "bfloat16",
+      "model_path": "/home/fedosr/VisualPO/Qwen2.5-VL-3B-Instruct",
+      "name": "qwen2_5_vl_3b",
+      "num_hidden_layers": 36,
+      "processor_use_fast": true,
+      "quantization": null,
+      "revision": "local-qwen2.5-vl-3b-instruct",
+      "tokenizer_path": null,
+      "trust_remote_code": true
+    },
+    "schemas": {
+      "metric_schema_version": 1,
+      "output_schema_version": 1,
+      "seed_derivation_version": 1
+    },
+    "scoring": {
+      "mode": "offline",
+      "scorer_name": "dataset_default",
+      "scorer_version": "1"
+    },
+    "storage": {
+      "compression": "zstd",
+      "compression_level": 3,
+      "target_row_group_size": 65536,
+      "use_dictionary": true,
+      "write_statistics": true
+    }
+  },
+  "status": "planned",
+  "updated_at_utc": "2026-08-03T10:44:12.550669Z"
+}

@@ -1,0 +1,6 @@
+pip-freeze diff
+diff: diagnostics/a100/pip-freeze.txt: No such file or directory
+diff_exit:True
+torch-environment diff
+diff: diagnostics/a100/torch-environment.txt: No such file or directory
+diff_exit:True

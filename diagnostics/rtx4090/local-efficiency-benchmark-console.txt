@@ -1,0 +1,36 @@
+2026-08-03 16:10:49,383 INFO visconf.planning {"event":"group_planned","experiment_group_id":"benchmark-local-rtx4090-16x32","group_dir":"/home/fedosr/VisualPO/VisConf/outputs/benchmarks/local-rtx4090-16x32-full/benchmark-local-rtx4090-16x32","run_count":6}
+2026-08-03 16:10:49,392 INFO visconf.runner {"dataset":"mathverse","event":"run_started","experiment_group_id":"benchmark-local-rtx4090-16x32","resumed":false,"run_id":"run-dafa03ad7b665a6b","split":"testmini","strategy":"diverse"}
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 59.94it/s]
+2026-08-03 16:10:51,144 INFO visconf.runner {"device":"cuda:0","dtype":"bfloat16","event":"environment_summary","gpu":"NVIDIA GeForce RTX 4090","run_id":"run-dafa03ad7b665a6b","torch_version":"2.5.1+cu124"}
+mathverse/diverse [--------------------] 0/1 prompts complete | ETA --:--
+2026-08-03 16:10:51,707 INFO visconf.generation.engine {"dataset":"mathverse","event":"microbatch_started","microbatch_size":32,"offset":0,"run_id":"run-dafa03ad7b665a6b","sample_id":"3","strategy":"diverse"}
+2026-08-03 16:11:21,946 INFO visconf.generation.engine {"event":"microbatch_completed","microbatch_size":32,"offset":0,"rollout_count":32,"run_id":"run-dafa03ad7b665a6b","sample_id":"3"}
+2026-08-03 16:11:22,892 INFO visconf.runner {"event":"example_completed","prompt_batch_size":1,"run_id":"run-dafa03ad7b665a6b","sample_id":"3","shard_id":"sample-4e07408562bedb8b-r0000-0031"}
+mathverse/diverse [####################] 1/1 prompts complete | ETA 00:00
+2026-08-03 16:11:23,251 INFO visconf.runner {"committed_rollouts":32,"dataset":"mathverse","event":"run_completed","experiment_group_id":"benchmark-local-rtx4090-16x32","run_id":"run-dafa03ad7b665a6b","strategy":"diverse"}
+{
+  "committed_rollouts": 32,
+  "committed_shards": 1,
+  "dataset": "mathverse",
+  "elapsed_seconds": 32.262075404001735,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "group_id": "benchmark-local-rtx4090-16x32",
+  "max_new_tokens": 1024,
+  "microbatch": 32,
+  "orphan_parts": 0,
+  "output_dir": "/home/fedosr/VisualPO/VisConf/outputs/benchmarks/local-rtx4090-16x32-full/benchmark-local-rtx4090-16x32/run-dafa03ad7b665a6b",
+  "peak_allocated_gib": 7.6336493492126465,
+  "prompts": 1,
+  "rollouts_per_prompt": 32,
+  "run_id": "run-dafa03ad7b665a6b",
+  "status": "complete",
+  "strategy": "diverse",
+  "table_rows": {
+    "examples": 1,
+    "generations": 32,
+    "token_attention_metrics": 7715,
+    "token_hidden_state_metrics": 7715,
+    "token_probability_metrics": 7715,
+    "tokens": 7715
+  }
+}

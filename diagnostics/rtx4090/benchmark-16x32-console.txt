@@ -1,0 +1,7 @@
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  8.77it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 11.08it/s]
+Completed 1/1 shape=16x32 status=complete decode_s=3.84 decode_tok_s=2647.24 peak_allocated_gib=14.57
+GPU: NVIDIA GeForce RTX 4090
+Prompts: 16; rollouts/prompt: 32
+shape       status     peak_alloc  peak_reserved  decode_s  total_s  decode_tok/s  e2e_tok/s
+16x32       complete        14.57          18.19      3.84     8.88       2647.24    1143.78
+Report: /home/fedosr/VisualPO/VisConf/diagnostics/rtx4090/benchmark-16x32.json

@@ -17,10 +17,10 @@ strategies:
 
 generation:
   rollouts_per_example: 32
-  prompt_batch_size: 8
+  prompt_batch_size: 4
   rollout_microbatch_size: 32
-  prompt_batching_strategy: contiguous
-  prompt_bucket_window_size: null
+  prompt_batching_strategy: token_count_bucketed
+  prompt_bucket_window_size: 32
   prompt_scheduler_algorithm_version: 1
   max_new_tokens: 1024
 

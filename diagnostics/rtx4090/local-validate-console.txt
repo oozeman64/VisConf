@@ -1,0 +1,49 @@
+{
+  "experiment_group_id": "local-rtx4090-16x32-20260803-v2",
+  "run_count": 6,
+  "runs": [
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-64898733446b55d0",
+      "score_shards": 0
+    },
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-3dbebb0d5c4f5629",
+      "score_shards": 0
+    },
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-8bfaa42b88f851a0",
+      "score_shards": 0
+    },
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-01a4b54890415d03",
+      "score_shards": 0
+    },
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-3ae7991387d45d98",
+      "score_shards": 0
+    },
+    {
+      "committed_rollouts": 0,
+      "core_shards": 0,
+      "orphan_parts": 0,
+      "run_id": "run-7812ce78100e52b5",
+      "score_shards": 0
+    }
+  ],
+  "status": "planned"
+}

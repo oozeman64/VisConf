@@ -1,0 +1,120 @@
+Mon Aug  3 13:53:13 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 590.57                 Driver Version: 591.86         CUDA Version: 13.1     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4090        On  |   00000000:01:00.0  On |                  Off |
+|  0%   33C    P8             12W /  450W |     899MiB /  24564MiB |     38%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A              31      G   /Xwayland                             N/A      |
++-----------------------------------------------------------------------------------------+
+GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-bdd3e753-77a2-81e7-d4e7-066b9d930c93)
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Mon Aug  3 13:53:14 2026
+Driver Version                                         : 591.86
+CUDA Version                                           : 13.1
+
+Attached GPUs                                          : 1
+GPU 00000000:01:00.0
+    Performance State                                  : P8
+    Clocks Event Reasons
+        Idle                                           : Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Temperature
+        GPU Current Temp                               : 33 C
+        GPU T.Limit Temp                               : 50 C
+        GPU Shutdown T.Limit Temp                      : -7 C
+        GPU Slowdown T.Limit Temp                      : -2 C
+        GPU Max Operating T.Limit Temp                 : 0 C
+        GPU Target Temperature                         : 84 C
+        Memory Current Temp                            : N/A
+        Memory Max Operating T.Limit Temp              : N/A
+    GPU Power Readings
+        Average Power Draw                             : 13.05 W
+        Instantaneous Power Draw                       : 14.10 W
+        Current Power Limit                            : 450.00 W
+        Requested Power Limit                          : 450.00 W
+        Default Power Limit                            : 450.00 W
+        Min Power Limit                                : 150.00 W
+        Max Power Limit                                : 600.00 W
+    Power Samples
+        Duration                                       : 2.54 sec
+        Number of Samples                              : 119
+        Max                                            : 22.36 W
+        Min                                            : 9.45 W
+        Avg                                            : 14.58 W
+    GPU Memory Power Readings 
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+    Module Power Readings
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+        Current Power Limit                            : N/A
+        Requested Power Limit                          : N/A
+        Default Power Limit                            : N/A
+        Min Power Limit                                : N/A
+        Max Power Limit                                : N/A
+    EDPp Multiplier                                    : N/A
+    Clocks
+        Graphics                                       : 480 MHz
+        SM                                             : 480 MHz
+        Memory                                         : 405 MHz
+        Video                                          : 1185 MHz
+    Applications Clocks
+        Graphics                                       : Requested functionality has been deprecated
+        Memory                                         : Requested functionality has been deprecated
+    Default Applications Clocks
+        Graphics                                       : Requested functionality has been deprecated
+        Memory                                         : Requested functionality has been deprecated
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 3105 MHz
+        SM                                             : 3105 MHz
+        Memory                                         : 10501 MHz
+        Video                                          : 2415 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : N/A
+    SM Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Memory Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+cat: /proc/driver/nvidia/version: No such file or directory

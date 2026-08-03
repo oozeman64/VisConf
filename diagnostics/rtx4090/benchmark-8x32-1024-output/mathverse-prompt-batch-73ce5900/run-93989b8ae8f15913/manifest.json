@@ -1,0 +1,1463 @@
+{
+  "committed_core_shards": [],
+  "committed_score_shards": [],
+  "created_at_utc": "2026-08-03T10:42:00.903172Z",
+  "dataset_source_hashes": {
+    "testmini.parquet": "c159e547d9fd076447d84cd6dd1a962f94e4c4d470bd93ff9ceb8f04b21dde4d"
+  },
+  "decoder_layer_count": 36,
+  "environment": {},
+  "example_count": null,
+  "example_selection_sha256": null,
+  "experiment_group_id": "mathverse-prompt-batch-73ce5900",
+  "git_commit": "526eb2cac662cffa19499b16a4149242f7eda3a3",
+  "git_dirty": true,
+  "layer_ranges": {
+    "all_layers_all_heads": [
+      1,
+      36
+    ],
+    "early_visual_integration": [
+      1,
+      21
+    ],
+    "last_layer": [
+      36,
+      36
+    ],
+    "visual_reasoning": [
+      22,
+      34
+    ]
+  },
+  "manifest_version": 1,
+  "metric_column_inventory": {
+    "examples": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "source_row_index",
+        "nullable": true,
+        "type": "int64"
+      },
+      {
+        "name": "question",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rendered_prompt",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "prompt_token_ids",
+        "nullable": false,
+        "type": "list<item: int32 not null>"
+      },
+      {
+        "name": "prompt_token_count",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "ground_truth_json",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "answer_type",
+        "nullable": true,
+        "type": "string"
+      },
+      {
+        "name": "images",
+        "nullable": false,
+        "type": "list<item: struct<source_ref: string, sha256: string not null, width: int32 not null, height: int32 not null, mode: string not null> not null>"
+      },
+      {
+        "name": "metadata_json",
+        "nullable": false,
+        "type": "string"
+      }
+    ],
+    "generations": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_seed",
+        "nullable": false,
+        "type": "uint64"
+      },
+      {
+        "name": "temperature",
+        "nullable": false,
+        "type": "float"
+      },
+      {
+        "name": "top_p",
+        "nullable": false,
+        "type": "float"
+      },
+      {
+        "name": "top_k",
+        "nullable": true,
+        "type": "int32"
+      },
+      {
+        "name": "repetition_penalty",
+        "nullable": false,
+        "type": "float"
+      },
+      {
+        "name": "generated_token_ids",
+        "nullable": false,
+        "type": "list<item: int32 not null>"
+      },
+      {
+        "name": "generated_text",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "num_retained_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "stop_reason",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "terminating_token_id",
+        "nullable": true,
+        "type": "int32"
+      },
+      {
+        "name": "hit_max_new_tokens",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "prompt_token_count",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "wall_time_seconds",
+        "nullable": true,
+        "type": "double"
+      },
+      {
+        "name": "tokens_per_second",
+        "nullable": true,
+        "type": "double"
+      },
+      {
+        "name": "completed_at_utc",
+        "nullable": false,
+        "type": "timestamp[us, tz=UTC]"
+      }
+    ],
+    "scores": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "scorer_name",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "scorer_version",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "score_shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "is_correct",
+        "nullable": true,
+        "type": "bool"
+      },
+      {
+        "name": "raw_final_answer",
+        "nullable": true,
+        "type": "string"
+      },
+      {
+        "name": "extracted_answer",
+        "nullable": true,
+        "type": "string"
+      },
+      {
+        "name": "scorer_method",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "score_details_json",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "scored_at_utc",
+        "nullable": false,
+        "type": "timestamp[us, tz=UTC]"
+      }
+    ],
+    "token_attention_metrics": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "step",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "n_image_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "n_prompt_text_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "n_generated_text_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "n_prompt_generated_text_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "n_all_attn_tokens",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "all_layers_all_heads__valid",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__img_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__prompt_generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__all_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_img_to_prompt_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_img_to_generated_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_img_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_prompt_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "all_layers_all_heads__attn_ratio_prompt_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__valid",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "early_visual_integration__img_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__img_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__prompt_generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__all_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_img_to_prompt_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_img_to_generated_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_img_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_prompt_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "early_visual_integration__attn_ratio_prompt_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__valid",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "visual_reasoning__img_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__img_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__prompt_generated_text_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_total",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_avg",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__all_attn_dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_img_to_prompt_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_img_to_generated_text",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_img_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_prompt_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "visual_reasoning__attn_ratio_prompt_generated_text_to_all",
+        "nullable": true,
+        "type": "float"
+      }
+    ],
+    "token_hidden_state_metrics": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "step",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "valid_layers_all",
+        "nullable": false,
+        "type": "int16"
+      },
+      {
+        "name": "valid_layers_early_visual_integration",
+        "nullable": false,
+        "type": "int16"
+      },
+      {
+        "name": "valid_layers_visual_reasoning",
+        "nullable": false,
+        "type": "int16"
+      },
+      {
+        "name": "last_layer_valid",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "cosine_gen_imgproto_hidden_avg_all_layers",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "cosine_gen_imgproto_hidden_last_layer",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "cosine_gen_imgproto_hidden_early_visual_integration",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "cosine_gen_imgproto_hidden_visual_reasoning",
+        "nullable": true,
+        "type": "float"
+      }
+    ],
+    "token_probability_metrics": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "step",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "metrics_valid",
+        "nullable": false,
+        "type": "bool"
+      },
+      {
+        "name": "invalid_reason",
+        "nullable": true,
+        "type": "string"
+      },
+      {
+        "name": "logp",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "kl_u_p",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "kl_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "gini",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "entropy",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "dist_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "inverse_perplexity",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "max_prob",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "margin_top2",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "log_ratio_margin_top2",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "selected_dominance",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "selected_logrank",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "topk_mass_2",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "topk_mass_5",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "topk_mass_10",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "topk_mass_20",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "tail_mass_2",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "tail_mass_5",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "tail_mass_10",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "tail_mass_20",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "norm_entropy_concentration",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "renyi_entropy_0p5",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "renyi_entropy_1",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "renyi_entropy_2",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "renyi_entropy_4",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "renyi_entropy_inf",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "js_p_u",
+        "nullable": true,
+        "type": "float"
+      },
+      {
+        "name": "selected_rank",
+        "nullable": true,
+        "type": "int32"
+      },
+      {
+        "name": "nucleus_size_0p9",
+        "nullable": true,
+        "type": "int32"
+      },
+      {
+        "name": "nucleus_size_0p95",
+        "nullable": true,
+        "type": "int32"
+      },
+      {
+        "name": "nucleus_size_0p99",
+        "nullable": true,
+        "type": "int32"
+      }
+    ],
+    "tokens": [
+      {
+        "name": "run_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "dataset",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "split",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "sample_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "strategy",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "rollout_index",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "step",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "shard_id",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "token_id",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "token_piece",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "token_text",
+        "nullable": false,
+        "type": "string"
+      },
+      {
+        "name": "predictor_position",
+        "nullable": false,
+        "type": "int32"
+      },
+      {
+        "name": "context_length",
+        "nullable": false,
+        "type": "int32"
+      }
+    ]
+  },
+  "metric_schema_version": 1,
+  "output_schema_version": 1,
+  "parquet_settings": {
+    "compression": "zstd",
+    "compression_level": 3,
+    "target_row_group_size": 65536,
+    "use_dictionary": true,
+    "write_statistics": true
+  },
+  "prompt_template_hashes": {
+    "dataset_prompt_template": "26110e810c20550e7001d3bfd3e688e42413dd3b698802e4d9a02df4a1636ba6"
+  },
+  "resolved_config": {
+    "base_seed": 42,
+    "config_hash": "e12485d26f0f8ae4b732a8292d5835d3185dc31d26bb1c5b27099fc79efbd773",
+    "dataset": {
+      "adapter": "mathverse",
+      "filter_id": "vision_intensive",
+      "filters": {
+        "problem_version": "Vision Intensive"
+      },
+      "name": "mathverse",
+      "prompt_template": "reasoning_boxed_v1",
+      "revision": "local-mathverse-testmini-vision-intensive",
+      "source": "/home/fedosr/VisualPO/MathVerse/testmini.parquet",
+      "split": "testmini"
+    },
+    "document_hashes": {
+      "docs/ATTENTION_METRICS.MD": "bc124f2cd94dcdca760792e7b9089bbc29c641c16911da434a6d46557ec4cee4",
+      "docs/OUTPUT_SCHEMA.md": "9f5403c9d5a50d2dd634e95e0b4909a6b50909497719967a02418f0c51dffe2e",
+      "docs/PROBABILITY_CONFIDENCE_METRICS.md": "eaf8c41abff0986befca21c8bf2a6cdcdf60c7f1dd751ae254b0417310bbb4ea",
+      "docs/REPO_SCHEMA.MD": "65f5147dde3c1751590bc6ba3d1890efdcc9b90c47fad5cbfb61aa1bf20d04d9",
+      "docs/VISUAL_HIDDEN_STATE_METRICS.MD": "51e0e1955b43a84dfd4307655331491668f058e239cf09c6044d1de9dcd0cf0f"
+    },
+    "experiment_group_id": "mathverse-prompt-batch-73ce5900",
+    "generation": {
+      "max_new_tokens": 1024,
+      "prompt_batch_size": 8,
+      "prompt_batching_strategy": "contiguous",
+      "prompt_bucket_window_size": null,
+      "prompt_scheduler_algorithm_version": 1,
+      "rollout_microbatch_size": 32,
+      "rollouts_per_example": 32
+    },
+    "hardware": {
+      "accelerator": "rtx 4090",
+      "benchmark_batch_shapes": [
+        [
+          8,
+          32
+        ]
+      ],
+      "benchmark_microbatch_sizes": [
+        32
+      ],
+      "default_rollout_microbatch_size": 32,
+      "max_active_decode_rows": 2048,
+      "max_rollout_microbatch_size": 32,
+      "memory_gb": 24,
+      "name": "rtx_4090"
+    },
+    "model": {
+      "attention_implementation": "eager",
+      "cpu_offload": false,
+      "device": "cuda:0",
+      "dtype": "bfloat16",
+      "model_path": "/home/fedosr/VisualPO/Qwen2.5-VL-3B-Instruct",
+      "name": "qwen2_5_vl_3b",
+      "num_hidden_layers": 36,
+      "processor_use_fast": true,
+      "quantization": null,
+      "revision": "local-qwen2.5-vl-3b-instruct",
+      "tokenizer_path": null,
+      "trust_remote_code": true
+    },
+    "output_dir": "/home/fedosr/VisualPO/VisConf/diagnostics/rtx4090/benchmark-8x32-1024-output/mathverse-prompt-batch-73ce5900/run-93989b8ae8f15913",
+    "run_id": "run-93989b8ae8f15913",
+    "run_label": "mathverse-diverse",
+    "sampling": {
+      "name": "diverse",
+      "repetition_penalty": 1.0,
+      "temperature": 1.0,
+      "top_k": null,
+      "top_p": 0.99
+    },
+    "schemas": {
+      "metric_schema_version": 1,
+      "output_schema_version": 1,
+      "seed_derivation_version": 1
+    },
+    "scoring": {
+      "mode": "offline",
+      "scorer_name": "dataset_default",
+      "scorer_version": "1"
+    },
+    "storage": {
+      "compression": "zstd",
+      "compression_level": 3,
+      "target_row_group_size": 65536,
+      "use_dictionary": true,
+      "write_statistics": true
+    }
+  },
+  "run_id": "run-93989b8ae8f15913",
+  "run_label": "mathverse-diverse",
+  "scorer_versions": [
+    {
+      "code_hash": "1af956098c07569dd1f9670f19b09f4cbacedc3b00184ee330d58d7f8e75be45",
+      "config_hash": "f99fd0f5ced0648bb0f471316b781ee763819a169e64438b7ddf4d8b70445c6e",
+      "mode": "offline",
+      "name": "dataset_default",
+      "version": "1"
+    }
+  ],
+  "seed_derivation_version": 1,
+  "status": "planned",
+  "stop_token_ids": {},
+  "updated_at_utc": "2026-08-03T10:42:00.903172Z"
+}

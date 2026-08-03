@@ -1,0 +1,43 @@
+2026-08-03 16:04:45,704 INFO visconf.planning {"event":"group_planned","experiment_group_id":"local-rtx4090-16x32-20260803-v2","group_dir":"/home/fedosr/VisualPO/VisConf/outputs/local-rtx4090-16x32/local-rtx4090-16x32-20260803-v2","run_count":6}
+{
+  "experiment_group_id": "local-rtx4090-16x32-20260803-v2",
+  "group_dir": "/home/fedosr/VisualPO/VisConf/outputs/local-rtx4090-16x32/local-rtx4090-16x32-20260803-v2",
+  "runs": [
+    {
+      "dataset": "mathverse",
+      "label": "mathverse-diverse",
+      "run_id": "run-64898733446b55d0",
+      "strategy": "diverse"
+    },
+    {
+      "dataset": "mathverse",
+      "label": "mathverse-concentrated",
+      "run_id": "run-3dbebb0d5c4f5629",
+      "strategy": "concentrated"
+    },
+    {
+      "dataset": "mathvista",
+      "label": "mathvista-diverse",
+      "run_id": "run-8bfaa42b88f851a0",
+      "strategy": "diverse"
+    },
+    {
+      "dataset": "mathvista",
+      "label": "mathvista-concentrated",
+      "run_id": "run-01a4b54890415d03",
+      "strategy": "concentrated"
+    },
+    {
+      "dataset": "mmmu_pro",
+      "label": "mmmu_pro-diverse",
+      "run_id": "run-3ae7991387d45d98",
+      "strategy": "diverse"
+    },
+    {
+      "dataset": "mmmu_pro",
+      "label": "mmmu_pro-concentrated",
+      "run_id": "run-7812ce78100e52b5",
+      "strategy": "concentrated"
+    }
+  ]
+}
