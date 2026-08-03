@@ -46,6 +46,15 @@ RUN python -m pip install --no-cache-dir \
 COPY docker/entrypoint.sh /usr/local/bin/visconf-entrypoint
 RUN chmod 0755 /usr/local/bin/visconf-entrypoint
 
+# Installed into site-packages so the thread cap applies to every interpreter,
+# including RunPod SSH sessions, which bypass sshd/PAM and start a non-login
+# shell -- no environment set by the entrypoint reaches them.
+COPY docker/sitecustomize.py /tmp/sitecustomize.py
+RUN python -c "import shutil, sysconfig; shutil.copy('/tmp/sitecustomize.py', sysconfig.get_paths()['purelib'] + '/sitecustomize.py')" \
+    && rm /tmp/sitecustomize.py \
+    && python -c "import os; value = os.environ.get('OMP_NUM_THREADS'); assert value and int(value) >= 1, value" \
+    && OMP_NUM_THREADS=3 python -c "import os; assert os.environ['OMP_NUM_THREADS'] == '3', os.environ['OMP_NUM_THREADS']"
+
 EXPOSE 22
 VOLUME ["/workspace"]
 WORKDIR /workspace
